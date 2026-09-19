@@ -507,6 +507,82 @@ The lab home was deleted and the test entry was removed from the store and verif
 `bin/fm-spawn.sh` therefore pre-registers the directory every claude launch starts in through `bin/fm-claude-trust.sh` before launch, and `tests/fm-claude-trust.test.sh` pins both halves of the scope contract for both shapes: a fresh worktree and a seeded secondmate home are trusted, and an out-of-scope path is refused.
 That automated spawn case runs against a fake claude, so it asserts the store entry and the launch command and nothing more; the live arms above are what establish that the entry actually suppresses the dialog.
 The composer-classification record below observes the same gate from the other side, where an untrusted worktree left Claude, Grok, and Muse unverified because the guard reads a first-launch trust dialog as an unreadable composer.
+The historical `--dangerously-skip-permissions` commands in the arms above remain the trust-dialog evidence; they are not the current spawn default.
+
+## Worker permission modes
+
+Verified 2026-09-12 on Claude Code 2.1.269, grok 1.0.25, and codex-cli 0.154.0.
+Spawned workers launch on the narrowest unattended permission flag each CLI documents: Claude and Grok `--permission-mode auto`, Codex `--approve-for-me`.
+Cursor, Muse, Rovo, and omp launch flags were not changed.
+Current Codex launches grant only existing directories for the status-record parent, the task inbox, the task brief/report directory, and `$HOME/tmp`.
+The whole supervisor home is not granted, because that root contains `config/` and `projects/`.
+`$HOME/tmp` is kept when that directory already exists, because this fleet's handover archives are written there with the built executable inside.
+
+### Pre-narrowing real-path probes (Claude, Grok, and Codex with a whole-home grant)
+
+Each probe ran from a throwaway git worktree under `/tmp/fm-permmode-proof/` and had to append `state/fm-permmode-a1.probe-<harness>` in the Firstmate home, write `/home/linux/tmp/fm-permmode-a1-probe-<harness>.txt`, run `gh api user --jq .login`, and run `git ls-remote git@github.com:kunchenguid/firstmate.git HEAD`.
+Claude used `--permission-prompts none` so a would-be interactive prompt would have been a denial instead of a park.
+The Codex command in this subsection still granted the whole Firstmate home, so it does not prove the current sandbox boundary.
+
+```sh
+claude --version
+grok --version
+codex --version
+claude --permission-mode auto --permission-prompts none --output-format text -p "$PROMPT"
+grok --permission-mode auto -p "$PROMPT"
+codex exec --approve-for-me \
+  -c sandbox_workspace_write.network_access=true \
+  --add-dir /home/linux/workspace/firstmate \
+  --add-dir /home/linux/tmp \
+  --skip-git-repo-check \
+  -c 'model_reasoning_effort="low"' \
+  "$PROMPT"
+```
+
+```text
+2.1.269 (Claude Code)
+grok 1.0.25 (f7e67d6988e2)
+codex-cli 0.154.0
+PROBE outside=ok tmp=ok gh=x10peter git=ok
+CLAUDE_EXIT=0
+GROK_EXIT=0
+CODEX_EXIT=0
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /home/linux/workspace/firstmate, /home/linux/tmp] (network access enabled)
+```
+
+On-disk files after those runs contained `probe-ok` and `tmp-ok`.
+Claude and Grok permission flags did not change after the Codex grant narrowing, so those two real-path results still apply to the current launch templates.
+Authenticated `gh api` and `git ls-remote` over SSH were proven only in this pre-narrowing arm.
+
+### Post-narrowing Codex sandbox (isolated layout)
+
+A later `codex exec --approve-for-me` used the current four-root grant list against an isolated supervisor layout, not the live Firstmate home.
+Worker cwd was a separate directory.
+Granted roots were the isolated `state/` parent, `state/task.inbox`, `data/task`, and a personal `tmp`.
+Denied targets were isolated `config/probe` and `projects/probe`.
+
+```text
+OpenAI Codex v0.154.0
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, .../supervisor/state, .../supervisor/state/task.inbox, .../supervisor/data/task, .../personal/tmp] (network access enabled)
+append task.status: exit 0
+rename inbox message to message.acked: exit 0
+write report.md: exit 0
+write personal/tmp/handover.txt: exit 0
+curl -I --max-time 20 https://github.com: exit 0, HTTP/2 200
+write supervisor/config/probe: exit 1, Read-only file system
+write supervisor/projects/probe: exit 1, Read-only file system
+```
+
+Persisted files after that run held `status-ok`, `report-ok`, `tmp-ok`, and the renamed inbox record.
+Both denied targets remained absent.
+Claude and Grok isolated auto-mode probes in the same layout also wrote status and a personal-tmp handover and received HTTP 200 from `https://github.com`.
+
+### Unproven
+
+Interactive `fm-spawn` worker and secondmate launches of these flags were not exercised live.
+Post-narrowing writes into the live Firstmate home and live `/home/linux/tmp/` were not re-run.
+Authenticated `gh api` and `git ls-remote` over SSH were not re-run under the narrowed Codex grant list.
+`tests/fm-spawn-dispatch-profile.test.sh` and `tests/fm-secondmate-harness.test.sh` pin the launch strings, including the narrowed Codex `--add-dir` roots and the network override.
 
 ## Codex hook trust
 

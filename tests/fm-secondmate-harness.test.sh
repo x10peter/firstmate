@@ -790,7 +790,7 @@ test_spawn_secondmate_harness_model_token() {
   [ "$(meta_field "$meta" model)" = opus ] || fail "model-token: meta model not opus (got '$(meta_field "$meta" model)')"
   [ "$(meta_field "$meta" effort)" = default ] || fail "model-token: meta effort not default (got '$(meta_field "$meta" effort)')"
   launch=$(cat "$launchlog")
-  assert_contains "$launch" "claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --model 'opus'" \
+  assert_contains "$launch" "claude --permission-mode auto --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --model 'opus'" \
     "model-token: launch did not carry --model opus"
   assert_not_contains "$launch" "--effort" "model-token: launch must not carry an --effort flag"
   pass "C3 spawn: config/secondmate-harness's model token threads --model into the launch and meta"
@@ -812,7 +812,7 @@ test_spawn_secondmate_harness_model_and_effort_tokens() {
   [ "$(meta_field "$meta" model)" = opus ] || fail "model-effort-tokens: meta model not opus"
   [ "$(meta_field "$meta" effort)" = high ] || fail "model-effort-tokens: meta effort not high (got '$(meta_field "$meta" effort)')"
   launch=$(cat "$launchlog")
-  assert_contains "$launch" "claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --model 'opus' --effort 'high'" \
+  assert_contains "$launch" "claude --permission-mode auto --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --model 'opus' --effort 'high'" \
     "model-effort-tokens: launch did not carry both --model opus and --effort high"
   pass "C4 spawn: config/secondmate-harness's model+effort tokens thread into the launch and meta"
 }
@@ -877,8 +877,14 @@ test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens() {
   [ "$(meta_field "$meta" model)" = default ] || fail "explicit-harness-no-tokens: meta model should stay default"
   [ "$(meta_field "$meta" effort)" = default ] || fail "explicit-harness-no-tokens: meta effort should stay default"
   launch=$(cat "$launchlog")
-  assert_contains "$launch" "codex --dangerously-bypass-approvals-and-sandbox" \
+  assert_contains "$launch" "codex --approve-for-me" \
     "explicit-harness-no-tokens: launch did not use codex"
+  assert_contains "$launch" "-c sandbox_workspace_write.network_access=true" \
+    "explicit-harness-no-tokens: secondmate launch did not enable workspace-write network access"
+  assert_contains "$launch" "--add-dir '$w/home/state'" "secondmate must receive status parent"
+  assert_not_contains "$launch" "--add-dir '$w/home/data/sm'" "secondmate must omit its absent parent-side brief directory"
+  assert_not_contains "$launch" "--add-dir '$w/home'" "secondmate must not receive the whole supervisor home"
+  assert_not_contains "$launch" "--add-dir '$w/home/data'" "secondmate must not receive all task data"
   assert_not_contains "$launch" "--model" "explicit-harness-no-tokens: launch must not carry a --model flag"
   assert_not_contains "$launch" "model_reasoning_effort" \
     "explicit-harness-no-tokens: launch must not carry a codex effort flag"
@@ -2188,7 +2194,7 @@ SH
 
 test_config_reread_serializes_concurrent_pushes() {
   local w head fakebin marker entered log first_out second_out first_pid first_status second_status
-  local first_instr second_instr first_line second_line
+  local first_instr second_instr first_line second_line deadline readiness_failure
   w=$(new_world config-reread-serialized-pushes)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$head"
@@ -2222,11 +2228,23 @@ SH
       "$ROOT/bin/fm-config-push.sh" > "$first_out" 2>&1
   ) &
   first_pid=$!
-  for _ in $(seq 1 100); do
-    [ -e "$entered" ] && break
-    sleep 0.02
+  # Allow slow CI startup, but distinguish an exited push from a readiness timeout.
+  deadline=$((SECONDS + 30))
+  readiness_failure='exited before pointer delivery'
+  while [ ! -e "$entered" ] && kill -0 "$first_pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      readiness_failure='timed out after 30s waiting for pointer delivery'
+      break
+    fi
+    sleep 0.05
   done
-  [ -e "$entered" ] || fail "first config push did not reach pointer delivery"
+  if [ ! -e "$entered" ]; then
+    kill "$first_pid" 2>/dev/null || true
+    wait "$first_pid"; first_status=$?
+    cat "$first_out" >&2
+    [ ! -f "$log" ] || tail -n 20 "$log" >&2
+    fail "first config push $readiness_failure (status $first_status)"
+  fi
   first_instr=$(reread_instruction_path "$w/sm") \
     || fail "first concurrent push did not publish its generation"
   printf 'two\n' > "$w/home/config/crew-harness"

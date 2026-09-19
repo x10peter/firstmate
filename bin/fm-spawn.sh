@@ -256,18 +256,20 @@
 #   See docs/configuration.md for provider/Git setup and supported limits.
 # Claude permission mode (config/claude-permission-mode):
 #   One token selecting the permission flag every claude launch (ship, scout,
-#   secondmate, and relaunch) carries. Absent or `bypass` keeps today's
-#   `--dangerously-skip-permissions`; `auto` launches with `--permission-mode
-#   auto` instead, Claude Code's classifier-reviewed mode, for a captain who
-#   refuses to run workers in bypass mode. Every other part of the claude launch
-#   is unchanged. The token is the file's whitespace-trimmed content; any other
-#   value, or an unreadable file, refuses the spawn before any endpoint,
-#   worktree, or record exists and names the accepted values. The file is read
-#   on every spawn and relaunch, so a change reaches the next launch without a
-#   restart, and it is inherited into secondmate homes (bin/fm-config-inherit-lib.sh).
+#   secondmate, and relaunch) carries. Absent or `auto` launches with
+#   `--permission-mode auto`, Claude Code's classifier-reviewed mode, the
+#   unattended default. `bypass` launches with `--dangerously-skip-permissions`
+#   instead. Every other part of the claude launch is unchanged. The token is
+#   the file's whitespace-trimmed content; any other value, or an unreadable
+#   file, refuses the spawn before any endpoint, worktree, or record exists and
+#   names the accepted values. The file is read on every spawn and relaunch, so
+#   a change reaches the next launch without a restart, and it is inherited into
+#   secondmate homes (bin/fm-config-inherit-lib.sh).
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
+#     __CODEXADDDIR__ extra --add-dir roots for --approve-for-me's workspace-write
+#                    sandbox (status parent, task inbox and brief dir, plus existing $HOME/tmp)
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
@@ -456,7 +458,7 @@ fi
 if ! CLAUDE_PERM_PRESENT=$(fm_config_source_present "$CONFIG/claude-permission-mode"); then
   exit 1
 fi
-CLAUDE_PERMISSION_MODE=bypass
+CLAUDE_PERMISSION_MODE=auto
 if [ "$CLAUDE_PERM_PRESENT" = 1 ]; then
   if [ ! -f "$CONFIG/claude-permission-mode" ] || [ ! -r "$CONFIG/claude-permission-mode" ]; then
     echo "error: config/claude-permission-mode must be a readable regular file holding one of: bypass, auto" >&2
@@ -466,7 +468,7 @@ if [ "$CLAUDE_PERM_PRESENT" = 1 ]; then
   case "$CLAUDE_PERMISSION_MODE" in
   bypass | auto) ;;
   *)
-    echo "error: config/claude-permission-mode holds '$CLAUDE_PERMISSION_MODE'; accepted values are: bypass (--dangerously-skip-permissions, the default when the file is absent), auto (--permission-mode auto)" >&2
+    echo "error: config/claude-permission-mode holds '$CLAUDE_PERMISSION_MODE'; accepted values are: auto (--permission-mode auto, the default when the file is absent), bypass (--dangerously-skip-permissions)" >&2
     exit 1
     ;;
   esac
@@ -1732,8 +1734,8 @@ launch_template() {
   # otherwise run with attribution back on; carrying it per launch keeps the
   # policy in force regardless of which settings scopes end up loaded.
   # __CLAUDEPERMFLAG__ is the permission flag config/claude-permission-mode
-  # selects (header above): --dangerously-skip-permissions by default, or
-  # --permission-mode auto for a captain who refuses bypass mode.
+  # selects (header above): --permission-mode auto by default, or
+  # --dangerously-skip-permissions when the file holds bypass.
   # A Claude task worker receives the brief and later steering as file-shaped
   # content, which is otherwise indistinguishable from indirect prompt
   # injection. Establish only those two Firstmate-owned task channels through
@@ -1769,11 +1771,20 @@ launch_template() {
   # session-start digest, and cd/arm seatbelts are exactly those project hooks
   # (docs/turnend-guard.md, docs/sessionstart-nudge.md, docs/cd-guard.md), so the
   # secondmate launch deliberately keeps hooks on.
+  # --approve-for-me auto-reviews approvals under the workspace-write sandbox
+  # (`codex --help`: "Route approval requests through automatic review using
+  # the workspace-write sandbox"). That is narrower than
+  # --dangerously-bypass-approvals-and-sandbox, which also disabled the
+  # sandbox. workspace-write confines writes to cwd plus --add-dir roots, and
+  # network stays off until [sandbox_workspace_write] network_access = true,
+  # so the template passes that -c override (same dotted key as
+  # `codex --help`'s -c examples) plus __CODEXADDDIR__ for task reporting
+  # directories and existing $HOME/tmp.
   codex)
     if [ "$kind" = secondmate ]; then
-      printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--approve-for-me -c sandbox_workspace_write.network_access=true __CODEXADDDIR__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else
-      printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox --disable hooks -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--approve-for-me -c sandbox_workspace_write.network_access=true __CODEXADDDIR__--disable hooks -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     fi
     ;;
   opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -1830,13 +1841,17 @@ launch_template() {
   # (bin/fm-busy-lib.sh) and nothing is armed below.
   agy) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __AGYBIN__ --prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)" __MODELFLAG____EFFORTFLAG__--dangerously-skip-permissions' ;;
   # grok (Grok Build TUI): a positional prompt starts the supervised interactive
-  # session. --always-approve auto-approves every tool execution (verified: the
-  # crewmate runs fully autonomously, no permission gate), which an unattended
-  # crewmate needs; it is the targeted equivalent of claude's
-  # --dangerously-skip-permissions. grok's turn-end signal does NOT ride the
-  # launch command - it is a Stop-event hook installed below (global hook +
-  # per-task pointer), so the template is identical for ship/scout/secondmate.
-  grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+  # session. --permission-mode auto lets the classifier auto-allow work it
+  # considers safe (`grok --help` lists default, acceptEdits, auto, dontAsk,
+  # bypassPermissions, plan). An unattended crewmate needs that so routine
+  # tool calls do not park on a prompt; a call the classifier will not allow
+  # is blocked or escalated instead of blanket-approved. Sandbox is a separate
+  # --sandbox profile (env GROK_SANDBOX) and stays off by default, so this
+  # flag does not confine filesystem or network access. grok's turn-end signal
+  # does NOT ride the launch command - it is a Stop-event hook installed below
+  # (global hook + per-task pointer), so the template is identical for
+  # ship/scout/secondmate.
+  grok) printf '%s' 'grok --permission-mode auto __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   # Cursor Agent CLI. --trust suppresses the workspace-trust prompt, which
   # --yolo does NOT cover and which would otherwise block every spawn, since
   # each task gets a fresh worktree path cursor has never seen. --yolo is the
@@ -2362,6 +2377,27 @@ esac
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# Codex --approve-for-me runs under workspace-write, which confines writes to
+# cwd plus --add-dir roots (`codex --help`: "Additional directories that should
+# be writable alongside the primary workspace"). Duplicate resolved paths are
+# skipped; a missing directory is omitted rather than created.
+# The status parent is required because --add-dir cannot grant a single file.
+# Existing $HOME/tmp supports cross-platform handover archives with built executables.
+codex_add_dir_flags() {
+  local path resolved flags="" seen="|"
+  for path in "$@"; do
+    [ -n "$path" ] || continue
+    [ -d "$path" ] || continue
+    resolved=$(CDPATH='' cd -- "$path" && pwd -P) || continue
+    case "$seen" in
+    *"|$resolved|"*) continue ;;
+    esac
+    seen="${seen}${resolved}|"
+    flags="${flags}--add-dir $(shell_quote "$resolved") "
+  done
+  printf '%s' "$flags"
 }
 
 # rovo confines every file-tool operation (open_files, create_file, grep, ...)
@@ -4410,6 +4446,10 @@ EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT" "$MODEL") || exit 1
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__CLAUDEPERMFLAG__/$CLAUDE_PERM_FLAG}
+if [ "$HARNESS" = codex ]; then
+  CODEX_ADDDIR=$(codex_add_dir_flags "$STATE_REAL" "$STATE_REAL/$ID.inbox" "$DATA/$ID" "${HOME:+$HOME/tmp}")
+  LAUNCH=${LAUNCH//__CODEXADDDIR__/$CODEX_ADDDIR}
+fi
 if [ "$HARNESS" = rovo ]; then
   ROVOCONFIGOVERRIDE=$(rovo_config_override_flag "$EFFORT" "$DATA" "$STATE" "$ID") || {
     echo "error: could not resolve this task's home paths for rovo's allowedExternalPaths grant" >&2
