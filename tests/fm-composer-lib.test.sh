@@ -1184,6 +1184,13 @@ test_matrix_grok_144_approval_titled_bottom_border() {
     bottom=$(_grok_titled_bottom 74 "Grok 4.6 ($effort) · always-approve")
     assert_screen "grok 1.0.44 $effort effort" empty "$CAPS_TMUX" "$top"$'\n'"$empty_row"$'\n'"$bottom" 1
   done
+  # Grok 1.0.70 titles a --permission-mode auto session ` · auto-review`.
+  bottom=$(_grok_titled_bottom 74 'Grok 4.7 (high) · auto-review')
+  assert_screen "grok 1.0.70 auto idle on tmux" empty "$CAPS_TMUX" "$top"$'\n'"$empty_row"$'\n'"$bottom" 1
+  assert_screen "grok 1.0.70 auto idle on herdr" empty "$CAPS_STYLED" "$top"$'\n'"$empty_row"$'\n'"$bottom"
+  assert_screen "grok 1.0.70 auto typed on tmux" pending "$CAPS_TMUX" "$top"$'\n'"$typed_row"$'\n'"$bottom" 1
+  bottom=$(_grok_titled_bottom 74 'Other 4.7 (high) · auto-review')
+  assert_screen "unknown surface title with auto suffix" unknown "$CAPS_TMUX" "$top"$'\n'"$empty_row"$'\n'"$bottom" 1
   bottom=$(_grok_titled_bottom 74 'Grok 4.7 (high) · auto-approve')
   assert_screen "grok unknown approval suffix" unknown "$CAPS_TMUX" "$top"$'\n'"$empty_row"$'\n'"$bottom" 1
   bottom=$(_grok_titled_bottom 74 'Grok 4.7 (high) · always-approve now')

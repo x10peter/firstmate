@@ -1854,8 +1854,22 @@ test_spawn_refuses_launch_settings_t3_cannot_honor() {  # <config-file> <content
   pass "fm-spawn.sh --backend t3code $harness: refuses config/$file=$content it cannot honor before any mutation"
 }
 
-# The default posture is T3's own full-access mode, so an explicit bypass file
-# changes nothing and the codex worker still launches.
+# An absent posture file has no setting to honor, so the default worker still
+# launches and records the full-access mode T3 really runs.
+test_spawn_absent_posture_records_t3_full_access() {  # <harness> <model>
+  local harness=$1 model=$2 id out rc mode
+  id=$(t3_uid "t3cfgz$harness")
+  t3_case "spawn-$harness-absent-posture"
+  t3_worker_setup "$id"
+  out=$(t3_worker_spawn "$id" "$harness" --model "$model"); rc=$?
+  expect_code 0 "$rc" "a t3code $harness spawn with no posture file should launch"$'\n'"$out"
+  mode=$(sed -n 's/^approval_mode=//p' "$CASE_DIR/state/$id.meta")
+  [ "$mode" = bypass ] || fail "the launched $harness worker records approval_mode=bypass, got '$mode'"
+  pass "fm-spawn.sh --backend t3code $harness: an absent posture file launches and records bypass"
+}
+
+# An explicit bypass file names the mode T3 really runs, so the codex worker
+# still launches.
 test_spawn_codex_accepts_bypass_approval_mode() {
   local id out rc mode
   id=$(t3_uid t3cfgzcodexbypass)
@@ -2793,6 +2807,8 @@ test_spawn_refuses_launch_settings_t3_cannot_honor claude-permission-mode auto "
 test_spawn_refuses_launch_settings_t3_cannot_honor codex-approval-mode approve-for-me "config/codex-approval-mode=approve-for-me" codex
 test_spawn_refuses_launch_settings_t3_cannot_honor codex-permission-mode restricted "config/codex-permission-mode=restricted" codex
 test_spawn_codex_accepts_bypass_approval_mode
+test_spawn_absent_posture_records_t3_full_access claude claude-sonnet-5
+test_spawn_absent_posture_records_t3_full_access codex gpt-5.6-sol
 test_spawn_refuses_launch_settings_t3_cannot_honor launch-env-allowlist HOME "config/launch-env-allowlist"
 test_spawn_refuses_raw_launch_command
 test_spawn_abort_returns_lease_only_after_archive ok

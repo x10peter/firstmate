@@ -84,11 +84,11 @@ harness_version() {  # <binary>
 # interactive approval.
 launch_cmd() {  # <name>
   case "$1" in
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '\''{"feedbackDrafts":"off"}'\''' ;;
-    codex) printf '%s' 'codex --dangerously-bypass-approvals-and-sandbox --disable hooks' ;;
+    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --permission-mode auto --settings '\''{"feedbackDrafts":"off"}'\''' ;;
+    codex) printf '%s' 'codex --approve-for-me -c sandbox_workspace_write.network_access=true --disable hooks' ;;
     opencode) printf '%s' "OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"allow\"}}' opencode" ;;
     pi|pi-signed) printf '%s' "$1" ;;
-    grok) printf '%s' 'grok --always-approve' ;;
+    grok) printf '%s' 'grok --permission-mode auto' ;;
     kimi) printf '%s' 'kimi --auto' ;;
     muse) printf '%s' 'MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on muse --yolo' ;;
     *) return 1 ;;

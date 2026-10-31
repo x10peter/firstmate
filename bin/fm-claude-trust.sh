@@ -20,10 +20,10 @@
 # Prints one line naming what it registered; refuses loudly on anything else.
 #
 # WHY THIS EXISTS. Claude Code gates a folder it has never seen behind an
-# interactive workspace-trust dialog, and --dangerously-skip-permissions does
-# NOT cover it: `claude --help` records that the dialog is skipped only in
-# non-interactive mode (-p, or a non-TTY stdout), and a spawned pane is
-# interactive. Every fresh task worktree therefore hits it, and so does every
+# interactive workspace-trust dialog, and neither --permission-mode auto nor
+# --dangerously-skip-permissions covers it: `claude --help` records that the
+# dialog is skipped only in non-interactive mode (-p, or a non-TTY stdout), and
+# a spawned pane is interactive. Every fresh task worktree therefore hits it, and so does every
 # secondmate home the operator has not opened by hand. The dialog renders
 # with the cursor on "No, exit" and firstmate's steering plane carries only
 # Enter, Escape and C-c with no arrow navigation, so firstmate cannot answer it

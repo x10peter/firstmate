@@ -177,7 +177,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" --dangerously-skip-permissions)
+  expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" '--permission-mode auto')
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
@@ -473,8 +473,8 @@ test_active_dispatch_profile_allows_explicit_harness() {
   assert_contains "$out" "spawned $id harness=codex" "spawn did not report explicit codex harness"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --dangerously-bypass-approvals-and-sandbox" \
-    "explicit harness launch did not thread model, effort, and Codex bypass flag"
+  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --approve-for-me" \
+    "explicit harness launch did not thread model and effort"
   pass "active crew-dispatch profile allows an explicit resolved harness"
 }
 
@@ -642,18 +642,29 @@ test_claude_threads_model_and_effort() {
 }
 
 test_codex_threads_model_and_effort() {
-  local rec id out status launch
+  local rec id out status launch root
   id=profile-codex-z3
   rec=$(make_spawn_case profile-codex codex "$id")
   read_case_record "$rec"
+  mkdir -p "$HOME_DIR/state/$id.inbox" "$HOME_DIR/user-home/tmp"
 
   out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model gpt-5 --effort high)
   status=$?
   expect_code 0 "$status" "codex spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 high
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --dangerously-bypass-approvals-and-sandbox" \
-    "codex launch did not thread model, reasoning effort config, and Codex bypass flag"
+  assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --approve-for-me" \
+    "codex launch did not thread model and reasoning effort config"
+  assert_contains "$launch" "-c sandbox_workspace_write.network_access=true" \
+    "codex launch did not enable workspace-write network access"
+  for root in "$HOME_DIR/state" "$HOME_DIR/state/$id.inbox" "$HOME_DIR/data/$id" "$HOME_DIR/user-home/tmp"; do
+    root=$(CDPATH='' cd -- "$root" && pwd -P) || fail "cannot resolve $root"
+    assert_contains "$launch" "--add-dir '$root'" "codex launch omitted required root $root"
+  done
+  for root in "$HOME_DIR" "$HOME_DIR/data" "$HOME_DIR/config" "$HOME_DIR/projects"; do
+    root=$(CDPATH='' cd -- "$root" 2>/dev/null && pwd -P) || continue
+    assert_not_contains "$launch" "--add-dir '$root' " "codex launch granted unrelated root $root"
+  done
   pass "codex receives --model and model_reasoning_effort profile flags"
 }
 
@@ -668,8 +679,8 @@ test_codex_threads_model_and_max_effort() {
   expect_code 0 "$status" "codex Luna spawn with max effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5.6-luna max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "codex --model 'gpt-5.6-luna' -c 'model_reasoning_effort=\"max\"' --dangerously-bypass-approvals-and-sandbox" \
-    "codex launch did not thread Luna's max reasoning effort config and Codex bypass flag"
+  assert_contains "$launch" "codex --model 'gpt-5.6-luna' -c 'model_reasoning_effort=\"max\"' --approve-for-me" \
+    "codex launch did not thread Luna's max reasoning effort config"
   pass "codex Luna receives --model and model_reasoning_effort max profile flags"
 }
 
@@ -684,9 +695,11 @@ test_codex_omits_max_effort_for_unsupported_model() {
   expect_code 0 "$status" "codex spawn with an unsupported model max effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex gpt-5 max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "codex --model 'gpt-5' --dangerously-bypass-approvals-and-sandbox" \
-    "codex launch did not preserve the model flag and Codex bypass flag when max effort was omitted"
+  assert_contains "$launch" "codex --model 'gpt-5' --approve-for-me" \
+    "codex launch did not preserve the model flag when max effort was omitted"
   assert_not_contains "$launch" "model_reasoning_effort" "codex launch must omit unsupported model max reasoning effort"
+  assert_not_contains "$launch" "/user-home/tmp'" "absent personal tmp must not be granted"
+  assert_absent "$HOME_DIR/user-home/tmp" "spawn must not create personal tmp"
   pass "codex omits max for models without the catalog capability"
 }
 
@@ -771,16 +784,19 @@ test_codex_approval_mode_contract() {
       fi
       expect_code 0 "$status" "$id spawn failed: $out"
       launch=$(cat "$LAUNCH_LOG")
-      if [ "$value" = approve-for-me ]; then
-        assert_contains "$launch" '--approve-for-me' 'persistent fallback was not used directly'
-        assert_not_contains "$launch" '--dangerously-bypass-approvals-and-sandbox' 'fallback retried bypass'
+      if [ "$value" = bypass ]; then
+        assert_contains "$launch" '--dangerously-bypass-approvals-and-sandbox' 'explicit bypass did not reach the launch'
+        assert_not_contains "$launch" '--approve-for-me' 'explicit bypass kept the default'
+        assert_not_contains "$launch" 'network_access' 'bypass carried the workspace-write network override'
+        assert_not_contains "$launch" '--add-dir' 'bypass carried workspace-write directory grants'
       else
-        assert_contains "$launch" '--dangerously-bypass-approvals-and-sandbox' 'Codex bypass default changed'
-        assert_not_contains "$launch" '--approve-for-me' 'unconfigured launch opted into fallback'
+        assert_contains "$launch" '--approve-for-me -c sandbox_workspace_write.network_access=true --add-dir' \
+          'approve-for-me did not carry its network override and directory grants'
+        assert_not_contains "$launch" '--dangerously-bypass-approvals-and-sandbox' 'the default retried bypass'
       fi
     done
   done
-  pass 'Codex defaults remain bypass; persistent fallback is direct and invalid values refuse'
+  pass 'Codex defaults to approve-for-me; bypass is explicit and invalid values refuse'
 }
 
 test_grok_threads_model_and_reasoning_effort() {
@@ -794,7 +810,7 @@ test_grok_threads_model_and_reasoning_effort() {
   expect_code 0 "$status" "grok spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 high
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "grok --always-approve --model 'grok-4' --reasoning-effort 'high'" \
+  assert_contains "$launch" "grok --permission-mode auto --model 'grok-4' --reasoning-effort 'high'" \
     "grok launch did not thread model and reasoning-effort flags"
   assert_not_contains "$launch" "--effort" "grok launch must use --reasoning-effort, not --effort"
   pass "grok receives --model and --reasoning-effort profile flags"
@@ -811,7 +827,7 @@ test_grok_omits_invalid_max_reasoning_effort() {
   expect_code 0 "$status" "grok spawn with unsupported max reasoning effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "grok --always-approve --model 'grok-4' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < " \
+  assert_contains "$launch" "grok --permission-mode auto --model 'grok-4' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < " \
     "grok launch did not preserve the model flag and typed brief when max effort was omitted"
   assert_not_contains "$launch" "--reasoning-effort" "grok launch must omit unsupported max reasoning effort"
   assert_not_contains "$launch" "--effort" "grok launch must not fall back to --effort for reasoning effort"
@@ -830,7 +846,7 @@ test_grok_omits_invalid_xhigh_reasoning_effort() {
   expect_code 0 "$status" "grok spawn with unsupported xhigh reasoning effort should omit the effort flag"
   assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 xhigh
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "grok --always-approve --model 'grok-4' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < " \
+  assert_contains "$launch" "grok --permission-mode auto --model 'grok-4' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < " \
     "grok launch did not preserve the model flag and typed brief when xhigh effort was omitted"
   assert_not_contains "$launch" "--reasoning-effort" "grok launch must omit unsupported xhigh reasoning effort"
   assert_not_contains "$launch" "--effort" "grok launch must not fall back to --effort for reasoning effort"
@@ -1835,7 +1851,7 @@ test_claude_forwards_firstmate_config_dir_when_set() {
   status=$?
   expect_code 0 "$status" "claude spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$CASE_DIR/claude-work' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions $(claude_worker_add_dirs "$HOME_DIR" "$id")--settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}'" \
+  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$CASE_DIR/claude-work' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --permission-mode auto $(claude_worker_add_dirs "$HOME_DIR" "$id")--settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}'" \
     "claude launch did not forward firstmate's CLAUDE_CONFIG_DIR to the crewmate pane"
   pass "claude forwards firstmate's CLAUDE_CONFIG_DIR so the crewmate uses the same credential store"
 }
@@ -1985,7 +2001,7 @@ test_claude_long_launch_is_delivered_intact() {
   status=$?
   expect_code 0 "$status" "long Claude launch should succeed"$'\n'"$out"
   launch=$(cat "$LAUNCH_LOG")
-  expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" --dangerously-skip-permissions)
+  expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" '--permission-mode auto')
   [ "${#expected}" -gt 1024 ] \
     || fail "Claude regression fixture is too short to cover the terminal line limit: ${#expected} bytes"
   [ "${#launch}" -gt 1024 ] \
@@ -2400,8 +2416,9 @@ SH
   pass "fm-spawn: actual ship/scout launch commands deliver the worker role contract"
 }
 
-# config/claude-permission-mode: bypass remains the unconfigured default;
-# explicit auto changes only the permission flag, and malformed values refuse.
+# config/claude-permission-mode (bin/fm-spawn.sh header): absent and `auto`
+# both produce `--permission-mode auto`, explicit `bypass` changes only the
+# permission flag, and malformed values refuse.
 claude_settings_json_arg() {  # <launch>
   local command
   command=$(fm_test_launch_command "$1")
@@ -2452,7 +2469,7 @@ claude_expected_launch() {  # <launch> <home> <id> <permission-flag>
   printf '%s' "export COMPACT_ADVISER_DISABLE=1; $(task_inbox_export "$2" "$3")$(fm_test_launch_git_prefix "$1")env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude $4 $(claude_worker_add_dirs "$2" "$3")--settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' $CLAUDE_CONTROL_CHANNEL_FLAG $quoted"
 }
 
-test_claude_permission_mode_absent_defaults_to_bypass() {
+test_claude_permission_mode_absent_defaults_to_auto() {
   local rec id out status launch expected
   id=permmode-absent-z18
   rec=$(make_spawn_case permmode-absent claude "$id")
@@ -2462,9 +2479,10 @@ test_claude_permission_mode_absent_defaults_to_bypass() {
   status=$?
   expect_code 0 "$status" "claude spawn with no claude-permission-mode should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" --dangerously-skip-permissions)
-  [ "$launch" = "$expected" ] || fail "absent config/claude-permission-mode did not default to bypass"$'\n'"expected: $expected"$'\n'"actual:   $launch"
-  pass "absent config/claude-permission-mode defaults to --dangerously-skip-permissions"
+  expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" '--permission-mode auto')
+  [ "$launch" = "$expected" ] || fail "absent config/claude-permission-mode did not default to auto"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  assert_not_contains "$launch" "--dangerously-skip-permissions" "default launch must not request bypass mode"
+  pass "absent config/claude-permission-mode defaults to --permission-mode auto"
 }
 
 test_claude_permission_mode_auto_opts_into_model_reviewed_launch() {
@@ -2479,8 +2497,8 @@ test_claude_permission_mode_auto_opts_into_model_reviewed_launch() {
   expect_code 0 "$status" "claude spawn with claude-permission-mode=auto should succeed"
   launch=$(cat "$LAUNCH_LOG")
   expected=$(claude_expected_launch "$launch" "$HOME_DIR" "$id" '--permission-mode auto')
-  [ "$launch" = "$expected" ] || fail "explicit auto did not produce the model-reviewed launch"$'\n'"expected: $expected"$'\n'"actual:   $launch"
-  pass "config/claude-permission-mode=auto opts into the model-reviewed launch"
+  [ "$launch" = "$expected" ] || fail "explicit auto did not produce the default launch"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  pass "explicit config/claude-permission-mode=auto matches the default launch"
 }
 
 test_claude_permission_mode_bypass_swaps_only_the_permission_flag() {
@@ -2619,26 +2637,28 @@ test_codex_permission_modes() {
       expect_code 0 "$status" "Codex $kind spawn under $mode should succeed: $out"
       launch=$(cat "$LAUNCH_LOG")
       flags="codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' "
+      assert_not_contains "$launch" '--dangerously-bypass-approvals-and-sandbox' "$mode must not bypass approvals"
       if [ "$mode" = restricted ]; then
         flags+='--sandbox workspace-write --ask-for-approval on-request '
-        assert_not_contains "$launch" '--dangerously-bypass-approvals-and-sandbox' "restricted must not bypass approvals"
+        assert_not_contains "$launch" '--approve-for-me' "restricted must not keep the approval default"
+        assert_not_contains "$launch" 'network_access' "restricted must not enable the network"
+        assert_not_contains "$launch" '--add-dir' "restricted must not grant extra writable directories"
       else
-        flags+='--dangerously-bypass-approvals-and-sandbox '
-        assert_not_contains "$launch" '--sandbox' "default must not add a sandbox flag"
-        assert_not_contains "$launch" '--ask-for-approval' "default must not add an approval flag"
+        flags+='--approve-for-me -c sandbox_workspace_write.network_access=true --add-dir '
+        assert_not_contains "$launch" '--sandbox' "$mode must not add a sandbox flag"
+        assert_not_contains "$launch" '--ask-for-approval' "$mode must not add an approval flag"
       fi
+      assert_contains "$launch" "$flags" "permission selection changed model, effort, or permission flags"
       if [ "$kind" = secondmate ]; then
         assert_not_contains "$launch" '--disable hooks' "secondmate must retain primary hooks"
         assert_not_contains "$launch" 'notify=' "secondmate must retain its own turn-end wiring"
       else
-        flags+='--disable hooks -c '
+        assert_contains "$launch" ' --disable hooks -c ' "worker must keep its hook flags"
         assert_contains "$launch" 'notify=' "worker must retain its turn-end notification"
       fi
-      assert_contains "$launch" "$flags" "permission selection changed model, effort, or hook flags"
-      assert_not_contains "$launch" '--add-dir' "Codex must not grant extra writable directories"
     done
   done
-  pass "Codex absent, bypass, and restricted modes preserve flags for ships, scouts, and secondmates"
+  pass "Codex absent and bypass keep approve-for-me; restricted replaces it for ships, scouts, and secondmates"
 }
 
 test_codex_permission_invalid_refuses_before_mutation() {
@@ -2702,7 +2722,7 @@ test_codex_permission_does_not_change_other_harnesses() {
   status=$?
   expect_code 0 "$status" "Claude spawn with Codex restriction should succeed: $out"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" 'claude --dangerously-skip-permissions ' "Codex setting changed Claude permissions"
+  assert_contains "$launch" 'claude --permission-mode auto ' "Codex setting changed Claude permissions"
   assert_not_contains "$launch" '--sandbox' "Codex sandbox flags leaked to Claude"
   assert_not_contains "$launch" '--ask-for-approval' "Codex approval flags leaked to Claude"
   pass "Codex restricted mode leaves other harness launch flags unchanged"
@@ -2780,7 +2800,7 @@ test_claude_forwards_firstmate_config_dir_when_set
 test_lavish_server_address_is_exported_to_worker_launch
 test_lavish_absent_config_preserves_destination_ambient
 test_claude_omits_config_dir_prefix_when_unset
-test_claude_permission_mode_absent_defaults_to_bypass
+test_claude_permission_mode_absent_defaults_to_auto
 test_claude_permission_mode_auto_opts_into_model_reviewed_launch
 test_claude_permission_mode_bypass_swaps_only_the_permission_flag
 test_claude_permission_mode_auto_reaches_scout_launch

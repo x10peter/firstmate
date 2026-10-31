@@ -65,7 +65,8 @@
 #                older claude). The bottom border may carry a TITLE (grok
 #                writes its model name there). A title embedded in the family's
 #                rule is tolerated at the aligned width, including Grok 1.0.44's
-#                rounded typed model/effort title with ` · always-approve`; Grok 1.0.5's
+#                rounded typed model/effort title with ` · always-approve` or Grok 1.0.70's
+#                ` · auto-review`; Grok 1.0.5's
 #                typed title also permits its proven three-column overhang.
 #   bare       - an agent prompt glyph row with no border at all (claude `❯`,
 #                codex `›`, muse `⟩`, cursor `→`). The agent glyph is itself the container
@@ -1218,7 +1219,7 @@ _fm_composer_titled_rule_inner_ok() {  # <top-inner>
 # inner (corners already stripped) still starts and ends with the family's own
 # rule glyph, so the title is embedded IN the rule rather than replacing it.
 _fm_composer_titled_bottom_ok() {  # <family> <bottom-inner> <top-spaces>
-  local family=$1 inner=$2 expected=$3 dash spaces title
+  local family=$1 inner=$2 expected=$3 dash spaces title approval
   fm_composer_normalize_trim_var inner
   case "$family" in
     rounded|light) dash='─' ;;
@@ -1233,16 +1234,19 @@ _fm_composer_titled_bottom_ok() {  # <family> <bottom-inner> <top-spaces>
   esac
   title=${inner//"$dash"/}
   fm_composer_normalize_trim_var title
-  # Grok 1.0.44 appends its approval mode after the typed title, joined by a
-  # mid-dot. Only that exact suffix on a typed Grok title is known; the single
-  # mid-dot column is swapped for an ASCII one so it cannot survive as residue
-  # in the geometry comparison, while any other mid-dot stays non-space.
+  # Grok appends its approval mode after the typed title, joined by a mid-dot:
+  # ` · always-approve` from 1.0.44, ` · auto-review` under --permission-mode
+  # auto on 1.0.70. Only those exact suffixes on a typed Grok title are known;
+  # the single mid-dot column is swapped for an ASCII one so it cannot survive
+  # as residue in the geometry comparison, while any other mid-dot stays
+  # non-space.
   case "$title" in
-    *' · always-approve')
+    *' · always-approve' | *' · auto-review')
       # Only the rounded family was observed for this approval-title shape.
       [ "$family" = rounded ] || return 1
-      _fm_composer_grok_typed_title_ok "${title%' · always-approve'}" || return 1
-      inner=${inner/' · always-approve'/' . always-approve'}
+      approval=${title##*' · '}
+      _fm_composer_grok_typed_title_ok "${title%" · $approval"}" || return 1
+      inner=${inner/" · $approval"/" . $approval"}
       ;;
   esac
   spaces=${inner//"$dash"/ }

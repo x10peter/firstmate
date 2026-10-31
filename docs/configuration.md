@@ -1319,12 +1319,14 @@ The CLI reference documents the one file-or-JSON flag, the settings page documen
 
 ### Codex automatic approval review
 
-Codex crewmate, scout, and secondmate launches default to `--dangerously-bypass-approvals-and-sandbox`.
-The local, gitignored `config/codex-approval-mode` accepts one whitespace-trimmed token: absent or `bypass` retains that default; `approve-for-me` selects `--approve-for-me`.
+Codex crewmate, scout, and secondmate launches default to `--approve-for-me -c sandbox_workspace_write.network_access=true`.
+That default also passes `--add-dir` for the status record parent, this task's inbox, its brief and report directory, and `$HOME/tmp`, omitting absent directories and resolved duplicates.
+The local, gitignored `config/codex-approval-mode` accepts one whitespace-trimmed token: absent or `approve-for-me` selects that default; `bypass` selects `--dangerously-bypass-approvals-and-sandbox`.
 Malformed values and unreadable files refuse before spawn mutation, and the setting applies to relaunches and is inherited into secondmate homes.
-`backend=t3code` always runs Codex at T3's `full-access`, so it refuses `approve-for-me` before mutation; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
-The fallback uses a model reviewer in the workspace-write sandbox, which starts with network access disabled and reviews writes outside the working directory.
-It remedies a managed policy that leaves bypass launches with user-reviewed approvals even when its sandbox bypass applies.
+`backend=t3code` always runs Codex at T3's `full-access`, so it records `bypass` for an absent file and refuses an explicit `approve-for-me` before mutation; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
+The default uses a model reviewer in the workspace-write sandbox, which reviews writes outside the working directory and those granted directories.
+The whole supervisor home and a linked worktree's shared Git metadata are not granted, so writes there, including `git commit` in a worktree, go through the reviewer.
+The default also remedies a managed policy that leaves bypass launches with user-reviewed approvals even when its sandbox bypass applies.
 Firstmate targets current CLIs rather than detecting versions or emulating older approval flags.
 Crew and scout launches still request hook disablement and retain their notification wiring, while secondmates retain their primary-session hooks.
 A managed policy can override the requested hook disablement, so it may still require an operator's hook review.
@@ -1340,12 +1342,11 @@ The token is the file's whitespace-trimmed content.
 
 | Token | Launch permission flag |
 | --- | --- |
-| `auto` | `--permission-mode auto` |
+| `auto` | `claude --permission-mode auto` |
 | `bypass` | `claude --dangerously-skip-permissions` |
 
-An absent file defaults to bypass, preserving `--dangerously-skip-permissions` for unconfigured homes.
-Auto uses a model reviewer and avoids managed policies that block bypass-permission sessions.
-It is selected by an explicit setting or the firstmate-invoked failover below.
+An absent file defaults to auto, which uses a model reviewer and avoids managed policies that block bypass-permission sessions.
+Bypass is the opt-in for a captain who wants workers to skip every permission check.
 Only the permission flag changes between the two modes.
 The environment prefix, session settings, model, effort flags, and the task-channel `--add-dir` grant below stay the same in both.
 
@@ -1361,7 +1362,7 @@ The diagnostic names the accepted values; Firstmate never falls back to a permis
 
 `bin/fm-spawn.sh` reads the file on every spawn and relaunch, so a change takes effect at the next launch without a restart.
 Both approval-mode files follow the primary-authoritative [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md) inherited-local-material contract.
-T3 Code owns its provider command and always uses `full-access`, so `backend=t3code` accepts the default `bypass` posture and refuses `auto` before mutation; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
+T3 Code owns its provider command and always uses `full-access`, so `backend=t3code` records `bypass` for an absent file and refuses an explicit `auto` before mutation; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
 
 The [Claude adapter reference](../.agents/skills/harness-adapters/references/harness/claude.md) records the permission-mode observations and the distinct startup dialogs.
 
@@ -1371,31 +1372,32 @@ The optional local, gitignored `config/codex-permission-mode` selects the permis
 
 | File content | Launch permission flags |
 | --- | --- |
-| Absent or `bypass` | The [Codex approval mode](#codex-automatic-approval-review) flag, `--dangerously-bypass-approvals-and-sandbox` by default |
+| Absent or `bypass` | The [Codex approval mode](#codex-automatic-approval-review) flags, `--approve-for-me` with its network override and directory grants by default |
 | `restricted` | `--sandbox workspace-write --ask-for-approval on-request` |
 
 Create the file containing exactly one of the two tokens, optionally followed by a newline.
-An absent file preserves the existing launch command.
+An absent file keeps the Codex approval mode's launch flags.
 Restricted mode changes only the permission flags; model, effort, and hook wiring stay the same.
 It replaces whichever flag `config/codex-approval-mode` selects, and the task record reports `restricted`, so managed approval failover never treats the launch as bypass.
-It grants no additional writable directories, including the shared Firstmate state directory.
+It enables no network override and grants no additional writable directories, including the shared Firstmate state directory.
 Writes outside the worker's worktree, including status reports and steering-inbox acknowledgements, remain subject to operator approval.
 Codex `--sandbox workspace-write` also disables network access and does not permit writes to shared Git metadata by default, so `git commit`, `git push`, `gh`, and no-mistakes pipeline steps from a restricted worker likewise stop at an approval prompt.
 Choose restricted mode only when that approval workflow is available.
 
 `bin/fm-spawn.sh` reads and validates the setting before any spawn or relaunch mutation, regardless of the selected harness.
-Any other content, an unreadable or non-regular file, or a dangling symlink refuses the launch instead of falling back to bypass.
+Any other content, an unreadable or non-regular file, or a dangling symlink refuses the launch instead of falling back to another posture.
 Changes take effect at the next launch without a restart.
 The file is not inherited into secondmate homes; configure it separately in each home that should also restrict its own Codex workers.
 `backend=t3code` always runs Codex at T3's `full-access`, so it refuses `restricted` before mutation; [`t3code-backend.md`](t3code-backend.md#active-limits) owns that backend limit.
 
 ## Persistent managed-policy failover
 
-After firstmate observes a Codex command-approval prompt under its bypass flag or a Claude managed-policy refusal of a bypass session, it asks the captain for explicit approval to save a lasting worker permission setting and relaunch the worker.
+After firstmate observes a Codex command-approval prompt under a bypass launch or a Claude managed-policy refusal of a bypass session, it asks the captain for explicit approval to save a lasting worker permission setting and relaunch the worker.
 Only after that approval does firstmate invoke `bin/fm-approval-failover.sh`; the script's header and help own the command and recovery mechanics.
 There is no automatic detection, polling, startup window, or approval-prompt answering.
 The command saves Codex's `approve-for-me` or Claude's `auto` in the owning home's absent mode file, so later launches use the model-reviewed remedy without retrying bypass.
 Existing explicit settings are never overwritten, including invalid or empty files, directories and dangling symlinks; a concurrent setting wins too.
+Bypass is itself an explicit setting, so when a bypass launch is defeated the command refuses and the remedy is to remove that file, which returns later launches to the model-reviewed default, then relaunch the worker.
 To retain a secondmate's remedy across convergence, select it in the primary home under the [inherited-local-material contract](../.agents/skills/secondmate-provisioning/SKILL.md).
 Recovery uses the existing [lifecycle control plane](agent-control.md), respecting its leases and supported-runtime limits; incomplete recovery is reported with the saved setting and work preserved.
 A `backend=t3code` task refuses before any change, because T3 already runs it at `full-access` and its spawns refuse both fallbacks; approve the pending request in T3 Code itself or choose another backend.

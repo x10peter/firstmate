@@ -1016,7 +1016,7 @@ test_spawn_secondmate_harness_model_token() {
   [ "$(meta_field "$meta" model)" = opus ] || fail "model-token: meta model not opus (got '$(meta_field "$meta" model)')"
   [ "$(meta_field "$meta" effort)" = default ] || fail "model-token: meta effort not default (got '$(meta_field "$meta" effort)')"
   launch=$(cat "$launchlog")
-  assert_contains "$launch" "claude --dangerously-skip-permissions $(sm_claude_add_dir "$w" sm)--settings '$(sm_claude_settings "$w" sm)' --model 'opus'" \
+  assert_contains "$launch" "claude --permission-mode auto $(sm_claude_add_dir "$w" sm)--settings '$(sm_claude_settings "$w" sm)' --model 'opus'" \
     "model-token: launch did not carry --model opus"
   jq -e '.feedbackDrafts == "off" and .attribution.commit == "" and .attribution.pr == "" and .attribution.sessionUrl == false and .hooks.UserPromptSubmit' \
     "$(sm_claude_settings "$w" sm)" >/dev/null \
@@ -1041,7 +1041,7 @@ test_spawn_secondmate_harness_model_and_effort_tokens() {
   [ "$(meta_field "$meta" model)" = opus ] || fail "model-effort-tokens: meta model not opus"
   [ "$(meta_field "$meta" effort)" = high ] || fail "model-effort-tokens: meta effort not high (got '$(meta_field "$meta" effort)')"
   launch=$(cat "$launchlog")
-  assert_contains "$launch" "claude --dangerously-skip-permissions $(sm_claude_add_dir "$w" sm)--settings '$(sm_claude_settings "$w" sm)' --model 'opus' --effort 'high'" \
+  assert_contains "$launch" "claude --permission-mode auto $(sm_claude_add_dir "$w" sm)--settings '$(sm_claude_settings "$w" sm)' --model 'opus' --effort 'high'" \
     "model-effort-tokens: launch did not carry both --model opus and --effort high"
   pass "C4 spawn: config/secondmate-harness's model+effort tokens thread into the launch and meta"
 }
@@ -1141,7 +1141,7 @@ test_spawn_explicit_effort_overrides_secondmate_harness_token() {
 }
 
 test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens() {
-  local w sm meta launchlog launch
+  local w sm meta launchlog launch home_real
   w="$TMP_ROOT/spawn-explicit-harness-no-tokens"
   sm="$w/sm"
   launchlog="$w/launch.log"
@@ -1156,8 +1156,15 @@ test_spawn_explicit_harness_does_not_inherit_secondmate_harness_tokens() {
   [ "$(meta_field "$meta" model)" = default ] || fail "explicit-harness-no-tokens: meta model should stay default"
   [ "$(meta_field "$meta" effort)" = default ] || fail "explicit-harness-no-tokens: meta effort should stay default"
   launch=$(cat "$launchlog")
-  assert_contains "$launch" "codex --dangerously-bypass-approvals-and-sandbox" \
-    "explicit-harness-no-tokens: launch did not use Codex bypass flag"
+  assert_contains "$launch" "codex --approve-for-me" \
+    "explicit-harness-no-tokens: launch did not use codex"
+  assert_contains "$launch" "-c sandbox_workspace_write.network_access=true" \
+    "explicit-harness-no-tokens: secondmate launch did not enable workspace-write network access"
+  home_real=$(CDPATH='' cd -- "$w/home" && pwd -P) || fail "cannot resolve $w/home"
+  assert_contains "$launch" "--add-dir '$home_real/state'" "secondmate must receive status parent"
+  assert_not_contains "$launch" "--add-dir '$home_real/data/sm'" "secondmate must omit its absent parent-side brief directory"
+  assert_not_contains "$launch" "--add-dir '$home_real' " "secondmate must not receive the whole supervisor home"
+  assert_not_contains "$launch" "--add-dir '$home_real/data' " "secondmate must not receive all task data"
   assert_not_contains "$launch" "--model" "explicit-harness-no-tokens: launch must not carry a --model flag"
   assert_not_contains "$launch" "model_reasoning_effort" \
     "explicit-harness-no-tokens: launch must not carry a codex effort flag"

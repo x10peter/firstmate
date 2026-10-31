@@ -450,24 +450,26 @@
 #
 # Claude permission mode (config/claude-permission-mode):
 #   One token selecting the permission flag every claude launch (ship, scout,
-#   secondmate, and relaunch) carries. Absent or `bypass` selects
-#   `--dangerously-skip-permissions`; `auto` selects `--permission-mode auto`,
-#   the model-reviewed remedy for managed machines. Every other part of the claude launch
+#   secondmate, and relaunch) carries. Absent or `auto` selects
+#   `--permission-mode auto`, the model-reviewed default; `bypass` selects
+#   `--dangerously-skip-permissions`. Every other part of the claude launch
 #   is unchanged. The token is the file's whitespace-trimmed content; any other
 #   value, or an unreadable file, refuses the spawn before any endpoint,
 #   worktree, or record exists and names the accepted values. The file is read
 #   on every spawn and relaunch, so a change reaches the next launch without a
 #   restart, and it is inherited into secondmate homes (bin/fm-config-inherit-lib.sh).
 # Codex approval mode (config/codex-approval-mode):
-#   One whitespace-trimmed token: absent or `bypass` selects
-#   --dangerously-bypass-approvals-and-sandbox; `approve-for-me` selects
-#   --approve-for-me, with model-reviewed approvals in workspace-write.
+#   One whitespace-trimmed token: absent or `approve-for-me` selects
+#   --approve-for-me with model-reviewed approvals in workspace-write, plus the
+#   network override and this task's __CODEXADDDIR__ roots; `bypass` selects
+#   --dangerously-bypass-approvals-and-sandbox.
 #   Any other value or unreadable file refuses before mutation, like the Claude
 #   file. Both files apply to ships, scouts, secondmates, and relaunches.
 #   bin/fm-approval-failover.sh owns captain-approved durable failover after
 #   firstmate observes a bypass approval prompt or policy refusal; no polling.
-#   T3 Code always uses full-access, so it refuses Claude `auto` and Codex
-#   `approve-for-me` or `restricted` before mutation.
+#   T3 Code always uses full-access, so an absent file records bypass there, and
+#   an explicit Claude `auto` or Codex `approve-for-me` or `restricted` refuses
+#   before mutation.
 # Worker tool exclusions:
 #   docs/configuration.md "Worker tool exclusions" owns config/crew-exclude-tools
 #   and its operator contract. Resolve it with bin/fm-exclude-tools-lib.sh
@@ -505,6 +507,10 @@
 #     __CLAUDESETTINGS__ the single claude --settings value: a quoted inline
 #                  JSON object for a crewmate or scout, or a quoted path to
 #                  state/<task-id>.claude-settings.json for a secondmate
+#     __CODEXADDDIR__ extra --add-dir roots for --approve-for-me's workspace-write
+#                  sandbox (codex_add_dir_flags below: status parent, task inbox
+#                  and brief dir, plus existing $HOME/tmp; supplies its own
+#                  trailing space)
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __PIAPPROVE__ optional --approve on a seeded Pi/pi-signed secondmate when
@@ -781,17 +787,17 @@ fi
 if ! CLAUDE_PERM_PRESENT=$(fm_config_source_present "$CONFIG/claude-permission-mode"); then
   exit 1
 fi
-CLAUDE_PERMISSION_MODE=bypass
+CLAUDE_PERMISSION_MODE=auto
 if [ "$CLAUDE_PERM_PRESENT" = 1 ]; then
   if [ ! -f "$CONFIG/claude-permission-mode" ] || [ ! -r "$CONFIG/claude-permission-mode" ]; then
-    echo "error: config/claude-permission-mode must be a readable regular file holding one of: bypass, auto" >&2
+    echo "error: config/claude-permission-mode must be a readable regular file holding one of: auto, bypass" >&2
     exit 1
   fi
   CLAUDE_PERMISSION_MODE=$(tr -d '[:space:]' <"$CONFIG/claude-permission-mode" || true)
   case "$CLAUDE_PERMISSION_MODE" in
   bypass | auto) ;;
   *)
-    echo "error: config/claude-permission-mode holds '$CLAUDE_PERMISSION_MODE'; accepted values are: bypass (--dangerously-skip-permissions, the default when the file is absent), auto (--permission-mode auto)" >&2
+    echo "error: config/claude-permission-mode holds '$CLAUDE_PERMISSION_MODE'; accepted values are: auto (--permission-mode auto, the default when the file is absent), bypass (--dangerously-skip-permissions)" >&2
     exit 1
     ;;
   esac
@@ -803,10 +809,10 @@ esac
 if ! CODEX_APPROVAL_PRESENT=$(fm_config_source_present "$CONFIG/codex-approval-mode"); then
   exit 1
 fi
-CODEX_APPROVAL_MODE=bypass
+CODEX_APPROVAL_MODE=approve-for-me
 if [ "$CODEX_APPROVAL_PRESENT" = 1 ]; then
   if [ ! -f "$CONFIG/codex-approval-mode" ] || [ ! -r "$CONFIG/codex-approval-mode" ]; then
-    echo "error: config/codex-approval-mode must be a readable regular file holding one of: bypass, approve-for-me" >&2
+    echo "error: config/codex-approval-mode must be a readable regular file holding one of: approve-for-me, bypass" >&2
     exit 1
   fi
   if ! CODEX_APPROVAL_MODE=$(perl -0777 -pe 's/\A\s+|\s+\z//g' <"$CONFIG/codex-approval-mode"); then
@@ -816,13 +822,13 @@ if [ "$CODEX_APPROVAL_PRESENT" = 1 ]; then
   case "$CODEX_APPROVAL_MODE" in
     bypass | approve-for-me) ;;
     *)
-      echo "error: config/codex-approval-mode holds '$CODEX_APPROVAL_MODE'; accepted values are: bypass (the default), approve-for-me" >&2
+      echo "error: config/codex-approval-mode holds '$CODEX_APPROVAL_MODE'; accepted values are: approve-for-me (the default), bypass" >&2
       exit 1
       ;;
   esac
 fi
 case "$CODEX_APPROVAL_MODE" in
-  approve-for-me) CODEX_APPROVAL_FLAG='--approve-for-me' ;;
+  approve-for-me) CODEX_APPROVAL_FLAG='--approve-for-me -c sandbox_workspace_write.network_access=true' ;;
   *) CODEX_APPROVAL_FLAG='--dangerously-bypass-approvals-and-sandbox' ;;
 esac
 # Resolve the opt-in Codex posture before any spawn or relaunch mutation.
@@ -2616,8 +2622,8 @@ launch_template() {
   # file also carries feedbackDrafts and attribution so those session keys
   # stay in force.
   # __CLAUDEPERMFLAG__ is the permission flag config/claude-permission-mode
-  # selects (header above): --dangerously-skip-permissions by default, or
-  # --permission-mode auto when configured.
+  # selects (header above): --permission-mode auto by default, or
+  # --dangerously-skip-permissions when the file holds bypass.
   # __CLAUDEADDDIRS__ is the task-channel directory grant
   # claude_add_dirs_flag below builds: Claude path-checks Read/Glob/Grep (and
   # an Edit's mandatory prior Read) against cwd plus --add-dir, and since
@@ -2672,11 +2678,17 @@ launch_template() {
   # session-start digest, and cd/arm seatbelts are exactly those project hooks
   # (docs/turnend-guard.md, docs/sessionstart-nudge.md, docs/cd-guard.md), so the
   # secondmate launch deliberately keeps hooks on but shares this approval posture.
+  # --approve-for-me auto-reviews approvals under the workspace-write sandbox
+  # (`codex --help`: "Route approval requests through automatic review using
+  # the workspace-write sandbox"). workspace-write confines writes to cwd plus
+  # --add-dir roots, and network stays off until [sandbox_workspace_write]
+  # network_access = true, so that posture's __CODEXAPPROVALFLAG__ carries the
+  # -c override and __CODEXADDDIR__ carries the task reporting directories.
   codex)
     if [ "$kind" = secondmate ]; then
-      printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ __CODEXADDDIR__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     else
-      printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ --disable hooks -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'codex __MODELFLAG____EFFORTFLAG____CODEXAPPROVALFLAG__ __CODEXADDDIR__--disable hooks -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
     fi
     ;;
   opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}__EFFORTFLAG__}'\'' __OPENCODEBIN__ __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -2732,13 +2744,17 @@ launch_template() {
   # (bin/fm-busy-lib.sh) and nothing is armed below.
   agy) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __AGYBIN__ --prompt-interactive "$(__OPINPUT__ encode launch-brief < __BRIEF__)" __MODELFLAG____EFFORTFLAG__--dangerously-skip-permissions' ;;
   # grok (Grok Build TUI): a positional prompt starts the supervised interactive
-  # session. --always-approve auto-approves every tool execution (verified: the
-  # crewmate runs fully autonomously, no permission gate), which an unattended
-  # crewmate needs; it is the targeted equivalent of claude's
-  # --dangerously-skip-permissions. grok's turn-end signal does NOT ride the
-  # launch command - it is a Stop-event hook installed below (global hook +
-  # per-task pointer), so the template is identical for ship/scout/secondmate.
-  grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+  # session. --permission-mode auto lets the classifier auto-allow work it
+  # considers safe (`grok --help` lists default, acceptEdits, auto, dontAsk,
+  # bypassPermissions, plan). An unattended crewmate needs that so routine
+  # tool calls do not park on a prompt; a call the classifier will not allow
+  # is blocked or escalated instead of blanket-approved. Sandbox is a separate
+  # --sandbox profile (env GROK_SANDBOX) and stays off by default, so this
+  # flag does not confine filesystem or network access. grok's turn-end signal
+  # does NOT ride the launch command - it is a Stop-event hook installed below
+  # (global hook + per-task pointer), so the template is identical for
+  # ship/scout/secondmate.
+  grok) printf '%s' 'grok --permission-mode auto __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
   # Cursor Agent CLI. --trust suppresses the workspace-trust prompt, which
   # --yolo does NOT cover and which would otherwise block every spawn, since
   # each task gets a fresh worktree path cursor has never seen. --yolo is the
@@ -3163,15 +3179,23 @@ if [ "$BACKEND" = t3code ]; then
     echo "error: backend=t3code cannot run a raw launch command because T3 starts the agent itself; pass a harness name or choose another backend" >&2
     exit 1
   fi
-  if [ "$HARNESS" = claude ] && [ "$CLAUDE_PERMISSION_MODE" != bypass ]; then
-    echo "error: backend=t3code runs claude at T3's full-access runtime mode and cannot honor config/claude-permission-mode=$CLAUDE_PERMISSION_MODE; remove that file or choose another backend" >&2
-    exit 1
+  # Only an explicit posture refuses. An absent file has no setting to honor,
+  # so it resolves to the full-access mode T3 really runs and records it.
+  if [ "$HARNESS" = claude ]; then
+    if [ "$CLAUDE_PERM_PRESENT" = 1 ] && [ "$CLAUDE_PERMISSION_MODE" != bypass ]; then
+      echo "error: backend=t3code runs claude at T3's full-access runtime mode and cannot honor config/claude-permission-mode=$CLAUDE_PERMISSION_MODE; remove that file or choose another backend" >&2
+      exit 1
+    fi
+    CLAUDE_PERMISSION_MODE=bypass
   fi
-  if [ "$HARNESS" = codex ] && [ "$CODEX_APPROVAL_MODE" != bypass ]; then
-    codex_posture_setting="config/codex-approval-mode=$CODEX_APPROVAL_MODE"
-    [ "$CODEX_PERMISSION_MODE" != restricted ] || codex_posture_setting="config/codex-permission-mode=restricted"
-    echo "error: backend=t3code runs codex at T3's full-access runtime mode and cannot honor $codex_posture_setting; remove that file or choose another backend" >&2
-    exit 1
+  if [ "$HARNESS" = codex ]; then
+    if [ "$CODEX_PERMISSION_MODE" = restricted ] || { [ "$CODEX_APPROVAL_PRESENT" = 1 ] && [ "$CODEX_APPROVAL_MODE" != bypass ]; }; then
+      codex_posture_setting="config/codex-approval-mode=$CODEX_APPROVAL_MODE"
+      [ "$CODEX_PERMISSION_MODE" != restricted ] || codex_posture_setting="config/codex-permission-mode=restricted"
+      echo "error: backend=t3code runs codex at T3's full-access runtime mode and cannot honor $codex_posture_setting; remove that file or choose another backend" >&2
+      exit 1
+    fi
+    CODEX_APPROVAL_MODE=bypass
   fi
   if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
     echo "error: backend=t3code cannot apply config/launch-env-allowlist because T3 starts the agent with its provider instance's environment; remove that file or choose another backend" >&2
@@ -3637,6 +3661,27 @@ claude_add_dirs_flag() {  # <kind> <state-dir> <data-dir> <code-root> <task-id>
     out="$out--add-dir $(shell_quote "$d") "
   done
   printf '%s' "$out"
+}
+
+# Codex --approve-for-me runs under workspace-write, which confines writes to
+# cwd plus --add-dir roots (`codex --help`: "Additional directories that should
+# be writable alongside the primary workspace"). Duplicate resolved paths are
+# skipped; a missing directory is omitted rather than created.
+# The status parent is required because --add-dir cannot grant a single file.
+# Existing $HOME/tmp supports cross-platform handover archives with built executables.
+codex_add_dir_flags() {
+  local path resolved flags="" seen="|"
+  for path in "$@"; do
+    [ -n "$path" ] || continue
+    [ -d "$path" ] || continue
+    resolved=$(CDPATH='' cd -- "$path" && pwd -P) || continue
+    case "$seen" in
+    *"|$resolved|"*) continue ;;
+    esac
+    seen="${seen}${resolved}|"
+    flags="${flags}--add-dir $(shell_quote "$resolved") "
+  done
+  printf '%s' "$flags"
 }
 
 resolved_existing_dir() {
@@ -6871,6 +6916,11 @@ case "$LAUNCH" in
   ;;
 esac
 LAUNCH=${LAUNCH//__CODEXAPPROVALFLAG__/$CODEX_APPROVAL_FLAG}
+CODEX_ADDDIR=
+if [ "$HARNESS" = codex ] && [ "$CODEX_APPROVAL_MODE" = approve-for-me ]; then
+  CODEX_ADDDIR=$(codex_add_dir_flags "$STATE_REAL" "$STATE_REAL/$ID.inbox" "$DATA/$ID" "${HOME:+$HOME/tmp}")
+fi
+LAUNCH=${LAUNCH//__CODEXADDDIR__/$CODEX_ADDDIR}
 if [ "$KEEP_AI_TRAILERS" = 1 ]; then
   LAUNCH=${LAUNCH//__CLAUDEATTRIBUTION__/}
 else
