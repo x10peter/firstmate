@@ -9,7 +9,7 @@ metadata:
 # Operational home layout
 
 ```
-AGENTS.md            this file (CLAUDE.md is a real @AGENTS.md pointer to it)
+AGENTS.md            this file; Claude Code loads it directly because the repo has no CLAUDE.md
 CONTRIBUTING.md      contributor workflow and repo conventions
 README.md            public overview and development notes
 .github/workflows/   shared CI and PR enforcement, committed
