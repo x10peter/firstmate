@@ -25,7 +25,7 @@ test_report_surface_uses_promoted_verdict_for_host_receipt() {
   state="$test_home/state"
   mkdir -p "$state"
   printf 'turn=t1\nrows=4\ntasks=alpha\nunscoped=0\nposture=attended\nwake=signal: alpha.status\n' > "$state/.supervision-host-turn"
-  printf 'paused [at=101]: MAIN ACTION NEEDED: launch review\n' > "$state/alpha.status"
+  printf 'paused [key=review-ready] [at=101]: MAIN ACTION NEEDED: launch review\n' > "$state/alpha.status"
   out=$(FM_HOME="$test_home" FM_SUPERVISION_ACTOR=branch FM_BRANCH_REPORT_TURN=t1 bash "$REPORT" \
     --task alpha --verdict routine --silent true --summary 'review waits' 2>&1) || fail "promoted report failed: $out"
   assert_contains "$out" 'recorded seq 1 [captain]; MAIN processes it from its next drain' \

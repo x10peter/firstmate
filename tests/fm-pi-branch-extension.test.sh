@@ -966,7 +966,7 @@ const { fire, dispatch, settle, outcomeScript, sentToMain, mainEntries, defaultS
 import { writeFileSync } from "node:fs";
 
 await fire("session_start", {}, defaultSessionCtx);
-writeFileSync(`${home}/state/branch-driver.status`, "paused [at=101]: MAIN ACTION NEEDED: launch review\n");
+writeFileSync(`${home}/state/branch-driver.status`, "paused [at=101] [key=review-ready]: MAIN ACTION NEEDED: launch review\n");
 let finishWakePrompt;
 globalThis.__fmOnBranchPrompt = () => new Promise((resolve) => { finishWakePrompt = resolve; });
 const offer = dispatch("signal: branch-driver paused");

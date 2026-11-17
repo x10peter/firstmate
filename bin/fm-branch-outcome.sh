@@ -20,17 +20,18 @@
 #     the log. Retention: the log is small (one line per handled fleet event)
 #     and truncation, if ever needed, is a captain-approved manual act.
 #   - Append is the shared write point for the host command and Pi tool.
-#     A task's latest $STATE/<task>.status line matching
-#     <state> [at=<digits>]: [optional key tag] MAIN ACTION NEEDED:
-#     promotes routine to captain with silent=false, once per task and exact
-#     at= epoch. The marker must start the note, optionally after one
-#     [key=<slug>] tag (letters, digits, dot, underscore, dash). Each matching
-#     row records mainActionEpoch as the digit string; other rows record "".
+#     A task's latest $STATE/<task>.status line within its captured endpoint
+#     is parsed by _fm_status_at_epoch and status_line_note (whose owner is
+#     bin/fm-classify-lib.sh). A known epoch and a note starting with
+#     MAIN ACTION NEEDED: promote routine to captain with silent=false,
+#     once per task and epoch. Matching rows record mainActionEpoch as the
+#     epoch string; other rows record "".
 #     Any earlier captain row for that task and epoch prevents promotion;
 #     explicit captain verdicts stay captain and also carry the epoch.
 #     mainActionPromoted records whether this guard changed the verdict.
 #     The check runs under the outcome lock, ignores fleet and unavailable
 #     status records, and never refuses a report or lowers its verdict.
+#     A failed dedupe lookup favors promotion over missing the action.
 #   - Cursor: $STATE/.branch-outcomes-cursor holds the highest seq presented
 #     by Pi as a routine merge note or sequence-keyed visible captain entry,
 #     emitted by Pi's locked session-start replay, silently consumed there
@@ -315,19 +316,23 @@ capture_status_position() { # <task>
 }
 
 guard_main_action() { # <task>; outcome lock held, never refuses append
-  local task=$1 f="$STATE/$1.status" line prior
-  local marker_re='^[a-z][a-z-]* \[at=([0-9]+)\]: (\[key=[A-Za-z0-9._-]+\] )?MAIN ACTION NEEDED:'
+  local task=$1 f="$STATE/$1.status" line prior epoch
   MAIN_ACTION_EPOCH=
   MAIN_ACTION_PROMOTED=false
   [ "$task" != fleet ] && [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
-  line=$(tail -n 1 "$f" 2>/dev/null) || return 0
-  [[ "$line" =~ $marker_re ]] || return 0
-  MAIN_ACTION_EPOCH=${BASH_REMATCH[1]}
+  [ "$CAPTURED_STATUS_ENDPOINT" -gt 0 ] || return 0
+  line=$(
+    set -o pipefail
+    head -c "$CAPTURED_STATUS_ENDPOINT" "$f" 2>/dev/null | tail -n 1
+  ) || return 0
+  _fm_status_at_epoch "$line" epoch || return 0
+  case "$(status_line_note "$line")" in 'MAIN ACTION NEEDED:'*) ;; *) return 0 ;; esac
+  MAIN_ACTION_EPOCH=$epoch
   [ "$VERDICT" = routine ] || return 0
   if [ -s "$STORE" ]; then
     prior=$(jq -rs --arg task "$task" --arg epoch "$MAIN_ACTION_EPOCH" '
       any(.[]; .task == $task and .verdict == "captain" and .mainActionEpoch == $epoch)
-    ' "$STORE" 2>/dev/null) || return 0
+    ' "$STORE" 2>/dev/null) || prior=false
     [ "$prior" != true ] || return 0
   fi
   VERDICT=captain

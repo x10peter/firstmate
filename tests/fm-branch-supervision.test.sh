@@ -127,12 +127,18 @@ test_main_action_status_promotes_once_per_task_and_epoch() {
   printf 'done [at=102]: MAIN ACTION NEEDED: review another task\n' > "$state/task-b.status"
   FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
     --task task-b --verdict routine --summary 'another result' >/dev/null || fail "another task at the same epoch failed"
+  printf 'done [key=review-ready] [at=103]: MAIN ACTION NEEDED: land branch\n' >> "$state/task-a.status"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict routine --summary 'key before timestamp' >/dev/null || fail "key before timestamp append failed"
+  printf 'done [at=104] [key=review-ready]: MAIN ACTION NEEDED: land branch\n' >> "$state/task-a.status"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict routine --summary 'timestamp before key' >/dev/null || fail "timestamp before key append failed"
   rows=$(FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" list) || fail "marked outcome list failed"
   printf '%s\n' "$rows" | jq -se '
-    map(.verdict) == ["captain", "routine", "captain", "captain"]
-    and map(.mainActionEpoch) == ["101", "101", "102", "102"]
-    and map(.mainActionPromoted) == [true, false, true, true]
-    and map(.silent) == [false, true, false, false]
+    map(.verdict) == ["captain", "routine", "captain", "captain", "captain", "captain"]
+    and map(.mainActionEpoch) == ["101", "101", "102", "102", "103", "104"]
+    and map(.mainActionPromoted) == [true, false, true, true, true, true]
+    and map(.silent) == [false, true, false, false, false, false]
   ' >/dev/null || fail "main-action promotion or task/epoch deduplication was wrong: $rows"
   pass "main-action paused and keyed done lines promote visibly once per task and epoch across wake kinds"
 }
@@ -148,6 +154,8 @@ test_main_action_guard_ignores_unmarked_or_unavailable_own_status() {
   printf 'paused [at=100]: review mentioned MAIN ACTION NEEDED: in prose\n' > "$state/prose.status"
   printf 'paused: MAIN ACTION NEEDED: no timestamp\n' > "$state/unstamped.status"
   printf 'paused [at=bad]: MAIN ACTION NEEDED: invalid timestamp\n' > "$state/bad-stamp.status"
+  printf 'done [at=0102]: MAIN ACTION NEEDED: leading zero\n' > "$state/leading-zero.status"
+  printf 'done [at=1234567890123]: MAIN ACTION NEEDED: 13 digits\n' > "$state/long-stamp.status"
   printf 'paused [at=100]: [key=bad/key] MAIN ACTION NEEDED: invalid key\n' > "$state/bad-key.status"
   printf 'paused [at=100]: no action needed\n' > "$state/unmarked.status"
   printf 'paused [at=100]: MAIN ACTION NEEDED: unreadable\n' > "$state/unreadable.status"
@@ -158,14 +166,14 @@ test_main_action_guard_ignores_unmarked_or_unavailable_own_status() {
     rm "$state/unreadable.status"
     mkdir "$state/unreadable.status"
   fi
-  for task in fleet missing latest prose unstamped bad-stamp bad-key unmarked unreadable; do
+  for task in fleet missing latest prose unstamped bad-stamp leading-zero long-stamp bad-key unmarked unreadable; do
     note="unchanged verdict for $task"
     FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
       --task "$task" --verdict routine --silent true --summary "$note" >/dev/null || fail "$task append failed"
   done
   chmod 700 "$state/unreadable.status"
   rows=$(FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" list) || fail "ignored outcome list failed"
-  printf '%s\n' "$rows" | jq -se 'length == 9 and all(.[];
+  printf '%s\n' "$rows" | jq -se 'length == 11 and all(.[];
     .verdict == "routine" and .silent == true and .mainActionPromoted == false and .mainActionEpoch == ""
   )' >/dev/null || fail "unmarked, fleet, or unavailable status changed a verdict: $rows"
   pass "main-action guard reads only the task latest status and leaves unrelated, misplaced, missing, or unreadable markers alone"
@@ -188,6 +196,83 @@ test_main_action_captain_report_satisfies_deduplication() {
     and all(.[]; .mainActionEpoch == "103" and .mainActionPromoted == false and .silent == false)
   ' >/dev/null || fail "explicit captain verdict was changed or failed to prevent duplicate promotion: $rows"
   pass "an explicit captain report stays captain and records the marked epoch without claiming guard promotion"
+}
+
+test_main_action_dedupe_error_still_promotes() {
+  local test_home fakebin real_jq rows
+  test_home="$TMP_ROOT/main-action-dedupe-error"
+  fakebin="$test_home/bin"
+  mkdir -p "$test_home/state" "$fakebin"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task earlier --verdict routine --summary 'seed history' >/dev/null || fail "dedupe-error fixture append failed"
+  printf 'paused [key=review-ready] [at=105]: MAIN ACTION NEEDED: launch review\n' > "$test_home/state/task-a.status"
+  real_jq=$(command -v jq)
+  cat > "$fakebin/jq" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -rs ]; then
+  printf 'dedupe lookup failed\n' >> "$FM_TEST_DEDUPE_LOG"
+  printf 'true\n'
+  exit 1
+fi
+exec "$FM_TEST_REAL_JQ" "$@"
+SH
+  chmod +x "$fakebin/jq"
+  FM_HOME="$test_home" PATH="$fakebin:$PATH" FM_TEST_REAL_JQ="$real_jq" FM_TEST_DEDUPE_LOG="$test_home/dedupe.log" \
+    bash "$ROOT/bin/fm-branch-outcome.sh" append --task task-a --verdict routine --silent true \
+    --summary 'review waits despite lookup error' >/dev/null || fail "dedupe lookup error failed the append"
+  [ "$(cat "$test_home/dedupe.log")" = 'dedupe lookup failed' ] || fail "the dedupe lookup error was not exercised"
+  rows=$(FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" list) || fail "dedupe-error outcome list failed"
+  printf '%s\n' "$rows" | jq -se 'length == 2 and (.[1] |
+    .verdict == "captain" and .silent == false and .mainActionPromoted == true and .mainActionEpoch == "105"
+  )' >/dev/null || fail "a dedupe error or its partial output suppressed promotion: $rows"
+  pass "a failed dedupe lookup promotes visibly even when it printed a partial true result"
+}
+
+test_main_action_guard_reads_only_the_captured_status_bytes() {
+  local test_home fakebin real_tail initial_kind initial_epoch initial_verdict endpoint rows
+  real_tail=$(command -v tail)
+  for initial_kind in marked unmarked; do
+    test_home="$TMP_ROOT/main-action-captured-$initial_kind"
+    fakebin="$test_home/bin"
+    mkdir -p "$test_home/state" "$fakebin"
+    initial_epoch=
+    initial_verdict=routine
+    if [ "$initial_kind" = marked ]; then
+      printf 'paused [at=201]: MAIN ACTION NEEDED: launch first review\n' > "$test_home/state/task-a.status"
+      initial_epoch=201
+      initial_verdict=captain
+    else
+      printf 'working [at=201]: still building\n' > "$test_home/state/task-a.status"
+    fi
+    endpoint=$(wc -c < "$test_home/state/task-a.status" | tr -d ' ')
+    : > "$test_home/append-on-read"
+    cat > "$fakebin/tail" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -n ] && [ "${2:-}" = 1 ] && [ -f "$FM_TEST_APPEND_ON_READ" ]; then
+  rm "$FM_TEST_APPEND_ON_READ"
+  printf 'done [at=202]: MAIN ACTION NEEDED: launch next review\n' >> "$FM_TEST_STATUS_FILE"
+fi
+exec "$FM_TEST_REAL_TAIL" "$@"
+SH
+    chmod +x "$fakebin/tail"
+    FM_HOME="$test_home" PATH="$fakebin:$PATH" FM_TEST_REAL_TAIL="$real_tail" \
+      FM_TEST_APPEND_ON_READ="$test_home/append-on-read" FM_TEST_STATUS_FILE="$test_home/state/task-a.status" \
+      bash "$ROOT/bin/fm-branch-outcome.sh" append --task task-a --verdict routine \
+      --summary 'captured event' >/dev/null || fail "$initial_kind captured-event append failed"
+    [ ! -e "$test_home/append-on-read" ] || fail "the concurrent status append was not exercised"
+    [ "$(wc -c < "$test_home/state/task-a.status" | tr -d ' ')" -gt "$endpoint" ] \
+      || fail "the status file did not advance beyond the captured endpoint"
+    FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append --task task-a --verdict routine \
+      --summary 'later event' >/dev/null || fail "$initial_kind later-event append failed"
+    rows=$(FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" list) || fail "$initial_kind captured outcome list failed"
+    printf '%s\n' "$rows" | jq -se --arg first_epoch "$initial_epoch" --arg first_verdict "$initial_verdict" --argjson endpoint "$endpoint" '
+      length == 2 and .[0].mainActionEpoch == $first_epoch and .[0].verdict == $first_verdict
+      and .[0].statusEndpoint == $endpoint and .[0].mainActionPromoted == ($first_verdict == "captain")
+      and .[1].mainActionEpoch == "202" and .[1].verdict == "captain" and .[1].mainActionPromoted == true
+      and .[1].statusEndpoint > $endpoint
+    ' >/dev/null || fail "the guard consumed or deduped a line beyond its captured status bytes: $rows"
+  done
+  pass "the guard judges only captured status bytes and leaves a later marked line eligible for promotion"
 }
 
 test_outcome_store_is_append_only_with_cursor_reads() {
@@ -1695,6 +1780,8 @@ test_branch_prompt_routes_completed_scouts_through_guarded_cleanup
 test_main_action_status_promotes_once_per_task_and_epoch
 test_main_action_guard_ignores_unmarked_or_unavailable_own_status
 test_main_action_captain_report_satisfies_deduplication
+test_main_action_dedupe_error_still_promotes
+test_main_action_guard_reads_only_the_captured_status_bytes
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_append_keeps_a_bounded_display_tail
 test_outcome_tail_keeps_whole_newest_rows_within_its_byte_budget
