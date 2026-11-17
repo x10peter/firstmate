@@ -19,6 +19,28 @@ set -u
 
 # --- report surface -----------------------------------------------------------
 
+test_report_surface_uses_promoted_verdict_for_host_receipt() {
+  local test_home state out
+  test_home="$TMP_ROOT/report-main-action"
+  state="$test_home/state"
+  mkdir -p "$state"
+  printf 'turn=t1\nrows=4\ntasks=alpha\nunscoped=0\nposture=attended\nwake=signal: alpha.status\n' > "$state/.supervision-host-turn"
+  printf 'paused [at=101]: MAIN ACTION NEEDED: launch review\n' > "$state/alpha.status"
+  out=$(FM_HOME="$test_home" FM_SUPERVISION_ACTOR=branch FM_BRANCH_REPORT_TURN=t1 bash "$REPORT" \
+    --task alpha --verdict routine --silent true --summary 'review waits' 2>&1) || fail "promoted report failed: $out"
+  assert_contains "$out" 'recorded seq 1 [captain]; MAIN processes it from its next drain' \
+    "report delivery used the submitted routine verdict or silence"
+  [ "$(cat "$state/.supervision-host-receipts")" = "$(printf 't1\t1\tcaptain\talpha')" ] \
+    || fail "the host receipt did not carry the stored captain verdict"
+  out=$(FM_HOME="$test_home" FM_SUPERVISION_ACTOR=branch FM_BRANCH_REPORT_TURN=t1 bash "$REPORT" \
+    --task alpha --verdict routine --silent true --summary 'unchanged review wait' 2>&1) || fail "repeated report failed: $out"
+  assert_contains "$out" 'recorded seq 2 [routine]; silent outcome remains in the outcome store' \
+    "report surface promoted the same status epoch twice"
+  [ "$(tail -n 1 "$state/.supervision-host-receipts")" = "$(printf 't1\t2\troutine\talpha')" ] \
+    || fail "the repeated report receipt did not retain routine"
+  pass "report surface: receipts and delivery follow the stored promotion, once per marked epoch"
+}
+
 test_report_surface_enforces_actor_turn_and_scope() {
   local home state out rc
   home="$TMP_ROOT/report"
@@ -586,6 +608,7 @@ test_branch_outcomes_keep_a_drain_presented_outcome_across_an_index_repair() {
 }
 
 fm_test_run \
+  test_report_surface_uses_promoted_verdict_for_host_receipt \
   test_report_surface_enforces_actor_turn_and_scope \
   test_report_after_the_return_is_queued_for_main \
   test_dispatch_entry_scopes_rows_and_renders_the_away_tail \

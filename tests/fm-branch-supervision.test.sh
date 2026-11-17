@@ -111,6 +111,85 @@ test_branch_prompt_routes_completed_scouts_through_guarded_cleanup() {
 
 # --- append-only outcome store ------------------------------------------------
 
+test_main_action_status_promotes_once_per_task_and_epoch() {
+  local test_home state rows
+  test_home="$TMP_ROOT/main-action-home"
+  state="$test_home/state"
+  mkdir -p "$state"
+  printf 'working [at=100]: building\npaused [at=101]: MAIN ACTION NEEDED: launch review\n' > "$state/task-a.status"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict routine --silent true --summary 'review waits' --wake signal >/dev/null || fail "marked paused append failed"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict routine --silent true --summary 'same review waits' --wake stale >/dev/null || fail "repeated marked append failed"
+  printf 'done [at=102]: [key=review-ready] MAIN ACTION NEEDED: land branch\n' >> "$state/task-a.status"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict routine --summary 'branch ready' --wake heartbeat >/dev/null || fail "new marked done append failed"
+  printf 'done [at=102]: MAIN ACTION NEEDED: review another task\n' > "$state/task-b.status"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-b --verdict routine --summary 'another result' >/dev/null || fail "another task at the same epoch failed"
+  rows=$(FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" list) || fail "marked outcome list failed"
+  printf '%s\n' "$rows" | jq -se '
+    map(.verdict) == ["captain", "routine", "captain", "captain"]
+    and map(.mainActionEpoch) == ["101", "101", "102", "102"]
+    and map(.mainActionPromoted) == [true, false, true, true]
+    and map(.silent) == [false, true, false, false]
+  ' >/dev/null || fail "main-action promotion or task/epoch deduplication was wrong: $rows"
+  pass "main-action paused and keyed done lines promote visibly once per task and epoch across wake kinds"
+}
+
+test_main_action_guard_ignores_unmarked_or_unavailable_own_status() {
+  local test_home state task note rows
+  test_home="$TMP_ROOT/main-action-ignored-home"
+  state="$test_home/state"
+  mkdir -p "$state"
+  printf 'paused [at=100]: MAIN ACTION NEEDED: another task waits\n' > "$state/other.status"
+  printf 'paused [at=100]: MAIN ACTION NEEDED: fleet is not a task\n' > "$state/fleet.status"
+  printf 'paused [at=100]: MAIN ACTION NEEDED: old request\nworking [at=101]: building again\n' > "$state/latest.status"
+  printf 'paused [at=100]: review mentioned MAIN ACTION NEEDED: in prose\n' > "$state/prose.status"
+  printf 'paused: MAIN ACTION NEEDED: no timestamp\n' > "$state/unstamped.status"
+  printf 'paused [at=bad]: MAIN ACTION NEEDED: invalid timestamp\n' > "$state/bad-stamp.status"
+  printf 'paused [at=100]: [key=bad/key] MAIN ACTION NEEDED: invalid key\n' > "$state/bad-key.status"
+  printf 'paused [at=100]: no action needed\n' > "$state/unmarked.status"
+  printf 'paused [at=100]: MAIN ACTION NEEDED: unreadable\n' > "$state/unreadable.status"
+  chmod 000 "$state/unreadable.status"
+  # Privileged test runners can read mode 000; a directory still proves that
+  # an unavailable status record cannot turn a report into a failure.
+  if [ -r "$state/unreadable.status" ]; then
+    rm "$state/unreadable.status"
+    mkdir "$state/unreadable.status"
+  fi
+  for task in fleet missing latest prose unstamped bad-stamp bad-key unmarked unreadable; do
+    note="unchanged verdict for $task"
+    FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+      --task "$task" --verdict routine --silent true --summary "$note" >/dev/null || fail "$task append failed"
+  done
+  chmod 700 "$state/unreadable.status"
+  rows=$(FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" list) || fail "ignored outcome list failed"
+  printf '%s\n' "$rows" | jq -se 'length == 9 and all(.[];
+    .verdict == "routine" and .silent == true and .mainActionPromoted == false and .mainActionEpoch == ""
+  )' >/dev/null || fail "unmarked, fleet, or unavailable status changed a verdict: $rows"
+  pass "main-action guard reads only the task latest status and leaves unrelated, misplaced, missing, or unreadable markers alone"
+}
+
+test_main_action_captain_report_satisfies_deduplication() {
+  local test_home rows
+  test_home="$TMP_ROOT/main-action-captain-home"
+  mkdir -p "$test_home/state"
+  printf 'done [at=103]: MAIN ACTION NEEDED: review result' > "$test_home/state/task-a.status"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict captain --summary 'result ready' >/dev/null || fail "captain append failed"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict routine --summary 'same result' >/dev/null || fail "routine after captain append failed"
+  FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict captain --summary 'explicit captain again' >/dev/null || fail "repeated explicit captain append failed"
+  rows=$(FM_HOME="$test_home" bash "$ROOT/bin/fm-branch-outcome.sh" list) || fail "captain outcome list failed"
+  printf '%s\n' "$rows" | jq -se '
+    map(.verdict) == ["captain", "routine", "captain"]
+    and all(.[]; .mainActionEpoch == "103" and .mainActionPromoted == false and .silent == false)
+  ' >/dev/null || fail "explicit captain verdict was changed or failed to prevent duplicate promotion: $rows"
+  pass "an explicit captain report stays captain and records the marked epoch without claiming guard promotion"
+}
+
 test_outcome_store_is_append_only_with_cursor_reads() {
   local home store snapshot seq1 seq2 unread replay out status
   home="$TMP_ROOT/store-home"
@@ -1613,6 +1692,9 @@ WRAPPER
 
 test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_branch_prompt_routes_completed_scouts_through_guarded_cleanup
+test_main_action_status_promotes_once_per_task_and_epoch
+test_main_action_guard_ignores_unmarked_or_unavailable_own_status
+test_main_action_captain_report_satisfies_deduplication
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_append_keeps_a_bounded_display_tail
 test_outcome_tail_keeps_whole_newest_rows_within_its_byte_budget

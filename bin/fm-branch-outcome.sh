@@ -6,8 +6,10 @@
 #   - Store: $STATE/branch-outcomes.jsonl, strictly APPEND-ONLY. One JSON
 #     object per line: {"seq":N,"epoch":N,"task":"...","wake":"...",
 #     "verdict":"routine"|"captain","summary":"...","silent":true|false,
-#     "statusEndpoint":N,"statusIdent":"..."}. Legacy rows without `silent`
-#     or status provenance remain valid and are treated as visible. A silent
+#     "statusEndpoint":N,"statusIdent":"...","mainActionEpoch":"...",
+#     "mainActionPromoted":true|false}. Legacy rows without the main-action
+#     fields, `silent`, or status provenance remain valid. An absent `silent`
+#     is treated as visible. A silent
 #     row must have verdict `routine`; the branch prompt and delivery consumers
 #     own the additional no-change eligibility rule.
 #     Every read and append validates the complete log as a gap-free sequence;
@@ -17,6 +19,18 @@
 #     entirely in the cursor sidecar so marking outcomes read cannot disturb
 #     the log. Retention: the log is small (one line per handled fleet event)
 #     and truncation, if ever needed, is a captain-approved manual act.
+#   - Append is the shared write point for the host command and Pi tool.
+#     A task's latest $STATE/<task>.status line matching
+#     <state> [at=<digits>]: [optional key tag] MAIN ACTION NEEDED:
+#     promotes routine to captain with silent=false, once per task and exact
+#     at= epoch. The marker must start the note, optionally after one
+#     [key=<slug>] tag (letters, digits, dot, underscore, dash). Each matching
+#     row records mainActionEpoch as the digit string; other rows record "".
+#     Any earlier captain row for that task and epoch prevents promotion;
+#     explicit captain verdicts stay captain and also carry the epoch.
+#     mainActionPromoted records whether this guard changed the verdict.
+#     The check runs under the outcome lock, ignores fleet and unavailable
+#     status records, and never refuses a report or lowers its verdict.
 #   - Cursor: $STATE/.branch-outcomes-cursor holds the highest seq presented
 #     by Pi as a routine merge note or sequence-keyed visible captain entry,
 #     emitted by Pi's locked session-start replay, silently consumed there
@@ -240,7 +254,15 @@ last_seq() { # [<file> [<first expected seq, or null for a bounded suffix>]]
         keys == ["epoch", "seq", "summary", "task", "verdict", "wake"]
         or (keys == ["epoch", "seq", "silent", "summary", "task", "verdict", "wake"] and (.silent | type) == "boolean")
         or (
-          keys == ["epoch", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake"]
+          (
+            keys == ["epoch", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake"]
+            or (
+              keys == ["epoch", "mainActionEpoch", "mainActionPromoted", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake"]
+              and ((.mainActionEpoch | type) == "string" and (.mainActionEpoch | test("^([0-9]+)?$")))
+              and (.mainActionPromoted | type) == "boolean"
+              and (.mainActionPromoted != true or (.verdict == "captain" and .mainActionEpoch != ""))
+            )
+          )
           and (.silent | type) == "boolean"
           and ((.statusEndpoint | type) == "number" and .statusEndpoint >= 0 and .statusEndpoint <= 9007199254740991 and .statusEndpoint == (.statusEndpoint | floor))
           and ((.statusIdent | type) == "string" and (.statusIdent | test("[\\t\\n]") | not))
@@ -290,6 +312,27 @@ capture_status_position() { # <task>
   case "$ident" in *$'\t'*|*$'\n'*|'') return 0 ;; esac
   CAPTURED_STATUS_ENDPOINT=$size
   CAPTURED_STATUS_IDENT=$ident
+}
+
+guard_main_action() { # <task>; outcome lock held, never refuses append
+  local task=$1 f="$STATE/$1.status" line prior
+  local marker_re='^[a-z][a-z-]* \[at=([0-9]+)\]: (\[key=[A-Za-z0-9._-]+\] )?MAIN ACTION NEEDED:'
+  MAIN_ACTION_EPOCH=
+  MAIN_ACTION_PROMOTED=false
+  [ "$task" != fleet ] && [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  line=$(tail -n 1 "$f" 2>/dev/null) || return 0
+  [[ "$line" =~ $marker_re ]] || return 0
+  MAIN_ACTION_EPOCH=${BASH_REMATCH[1]}
+  [ "$VERDICT" = routine ] || return 0
+  if [ -s "$STORE" ]; then
+    prior=$(jq -rs --arg task "$task" --arg epoch "$MAIN_ACTION_EPOCH" '
+      any(.[]; .task == $task and .verdict == "captain" and .mainActionEpoch == $epoch)
+    ' "$STORE" 2>/dev/null) || return 0
+    [ "$prior" != true ] || return 0
+  fi
+  VERDICT=captain
+  SILENT=false
+  MAIN_ACTION_PROMOTED=true
 }
 
 write_outcome_index() { # <task> <seq> [<endpoint> <identity>]
@@ -535,11 +578,12 @@ case "$CMD" in
     fi
     SEQ=$(( LAST_SEQ + 1 ))
     capture_status_position "$TASK"
+    guard_main_action "$TASK"
     rm -f -- "$OUTCOME_INDEX_READY" || { fm_lock_release "$LOCK"; exit 1; }
-    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"statusEndpoint":%s,"statusIdent":"%s"}\n' \
+    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"statusEndpoint":%s,"statusIdent":"%s","mainActionEpoch":"%s","mainActionPromoted":%s}\n' \
       "$SEQ" "$(date +%s)" "$(json_escape "$TASK")" "$(json_escape "$WAKE")" \
       "$VERDICT" "$(json_escape "$SUMMARY")" "$SILENT" "$CAPTURED_STATUS_ENDPOINT" \
-      "$(json_escape "$CAPTURED_STATUS_IDENT")" >> "$STORE"
+      "$(json_escape "$CAPTURED_STATUS_IDENT")" "$MAIN_ACTION_EPOCH" "$MAIN_ACTION_PROMOTED" >> "$STORE"
     write_outcome_tail || echo "warning: outcome $SEQ was stored but its display tail copy could not be refreshed" >&2
     # A task with neither a live meta nor a status log is retired: the branch
     # reports the teardown it just performed, and writing the index here would

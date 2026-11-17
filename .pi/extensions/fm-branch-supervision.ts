@@ -1289,7 +1289,7 @@ export default function (pi: ExtensionAPI) {
             };
           }
           return {
-            content: [{ type: "text", text: `recorded seq ${appended.stdout} and delivered [${verdict}] into main` }],
+            content: [{ type: "text", text: `recorded seq ${appended.stdout} and delivered into main` }],
             details: undefined,
           };
         });

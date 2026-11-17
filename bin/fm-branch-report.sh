@@ -20,6 +20,8 @@
 #
 # The verdict criteria are owned by bin/fm-branch-prompt.sh ("Verdict: routine
 # or captain"); --silent true is legal only for a routine outcome.
+# Receipts and delivery use the stored verdict and silence after the append
+# guard in bin/fm-branch-outcome.sh, rather than the submitted values.
 # --wake defaults to the wake reason the host recorded for the turn.
 #
 # Only the branch actor of a live host turn may report: FM_SUPERVISION_ACTOR
@@ -123,6 +125,12 @@ if ! SEQ=$("$SCRIPT_DIR/fm-branch-outcome.sh" "$@"); then
   echo "outcome store append failed (nothing recorded)" >&2
   exit 1
 fi
+if ! RECORDED=$("$SCRIPT_DIR/fm-branch-outcome.sh" lookup --seqs "$SEQ") \
+    || ! DELIVERY=$(printf '%s\n' "$RECORDED" | jq -er '[.verdict, (.silent | tostring)] | @tsv'); then
+  echo "recorded seq $SEQ, but its delivery fields could not be read; the host will hand this wake to MAIN" >&2
+  exit 1
+fi
+IFS=$'\t' read -r VERDICT SILENT <<< "$DELIVERY"
 printf '%s\t%s\t%s\t%s\n' "$TURN" "$SEQ" "$VERDICT" "$TASK" >> "$RECEIPTS" || {
   echo "recorded seq $SEQ, but the host receipt could not be written; the host will hand this wake to MAIN" >&2
   exit 1

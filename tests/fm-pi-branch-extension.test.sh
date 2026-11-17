@@ -952,6 +952,56 @@ EOF
   pass "a captain outcome reaches main's model as one typed, sequence-keyed processing request while routine notes stay plain"
 }
 
+test_main_action_routine_report_delivers_captain_outcome_once() {
+  local repo test_home out status
+  repo="$TMP_ROOT/main-action-root"
+  test_home="$TMP_ROOT/main-action-home"
+  mkdir -p "$test_home/state" "$test_home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$test_home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, dispatch, settle, outcomeScript, sentToMain, mainEntries, defaultSessionCtx, home }; })()`);
+const { fire, dispatch, settle, outcomeScript, sentToMain, mainEntries, defaultSessionCtx, home } = globalThis.__t;
+import { writeFileSync } from "node:fs";
+
+await fire("session_start", {}, defaultSessionCtx);
+writeFileSync(`${home}/state/branch-driver.status`, "paused [at=101]: MAIN ACTION NEEDED: launch review\n");
+let finishWakePrompt;
+globalThis.__fmOnBranchPrompt = () => new Promise((resolve) => { finishWakePrompt = resolve; });
+const offer = dispatch("signal: branch-driver paused");
+if (!offer.accepted) throw new Error("branch did not accept the wake offer");
+await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "branch wake prompt");
+const report = globalThis.__fmSessions[0].options.customTools.find((tool) => tool.name === "fm_branch_report");
+for (const call of ["first", "repeated"]) {
+  const result = await report.execute(call, { task: "branch-driver", verdict: "routine", silent: true, summary: "review waits" }, undefined, undefined, {});
+  if (result.isError) throw new Error(`report failed: ${JSON.stringify(result)}`);
+  if (call === "first" && result.content.some((item) => item.text?.includes("[routine]"))) {
+    throw new Error("promoted report response still claims routine delivery");
+  }
+}
+const rows = outcomeScript(["list"]).split("\n").map((line) => JSON.parse(line));
+if (rows.length !== 2 || rows[0].verdict !== "captain" || rows[0].silent !== false || rows[0].mainActionPromoted !== true ||
+    rows[1].verdict !== "routine" || rows[1].silent !== true || rows[1].mainActionPromoted !== false) {
+  throw new Error(`wrong stored promotion: ${JSON.stringify(rows)}`);
+}
+const visible = mainEntries.filter((entry) => entry.customType === "fm-branch-visible-outcome");
+const requests = sentToMain.filter((sent) => sent.message.customType === "fm-branch-process");
+if (visible.length !== 1 || visible[0].data.seq !== 1 || requests.length !== 1 || !requests[0].options.triggerTurn) {
+  throw new Error(`promoted outcome did not open exactly one main turn: ${JSON.stringify({ visible, requests })}`);
+}
+if (outcomeScript(["unread"]) !== "") throw new Error("delivered outcomes were not marked read");
+finishWakePrompt();
+await offer.settlement;
+await fire("session_shutdown", {}, defaultSessionCtx);
+console.log("main action delivery ok");
+EOF
+  status=$?; out=$(cat "$TMP_ROOT/node-output")
+  [ "$status" -eq 0 ] || fail "main-action Pi delivery failed: $out"
+  assert_contains "$out" 'main action delivery ok' "main-action Pi delivery did not finish"
+  pass "Pi report tool: a marked routine report opens one visible captain outcome and main processing turn"
+}
+
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {
   local repo home out status
   repo="$TMP_ROOT/requested-outcome-root"
@@ -6236,6 +6286,7 @@ test_outcomes_tool_call_headers_follow_the_loaded_pi_version
 test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
+test_main_action_routine_report_delivers_captain_outcome_once
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery
 test_captain_outcome_is_exactly_once_across_crash_reload_and_unrelated_response
 test_captain_outcome_processing_turn_is_sequence_keyed_and_re_presented

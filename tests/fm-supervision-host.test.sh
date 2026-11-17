@@ -126,6 +126,22 @@ test_engine_in_another_time_zone_handles_its_granted_rows() {
   pass "host: an engine in another time zone than the host drains, reports, and acknowledges its granted rows"
 }
 
+test_attended_marked_routine_outcome_wakes_main() {
+  local test_home stamp
+  test_home=$(make_home attended-main-action attended)
+  start_host "$test_home"
+  wait_until 150 watcher_live "$test_home" || fail "main action: the host never started a watcher cycle"
+  stamp=$(date +%s)
+  printf 'paused [at=%s]: MAIN ACTION NEEDED: launch review\n' "$stamp" >> "$test_home/state/demo.status"
+  wait_until_deadline 60 host_exited "$test_home" || fail "main action: a marked routine outcome did not wake main"
+  expect_code 0 "$(cat "$test_home/host.rc")" "a promoted outcome must hand back successfully"
+  assert_re '^supervision-host: branch-outcome: .*\(store rows 1\)' "$test_home/host.out" \
+    "the stored promotion did not reach the host handback"
+  jq -se 'length == 1 and .[0].verdict == "captain" and .[0].silent == false and .[0].mainActionPromoted == true' \
+    "$test_home/state/branch-outcomes.jsonl" >/dev/null || fail "the host did not store the marked routine report as captain"
+  pass "host: a routine report for a marked status line deterministically wakes main"
+}
+
 test_attended_captain_outcome_reaches_main_through_branch_outcomes() {
   local home drained
   home=$(make_home attended-captain attended)
@@ -921,6 +937,7 @@ fm_test_run \
   test_attended_routine_wake_is_handled_on_the_engine_and_stays_off_main \
   test_host_stopped_right_after_a_handled_wake_exits_and_frees_the_queue \
   test_engine_in_another_time_zone_handles_its_granted_rows \
+  test_attended_marked_routine_outcome_wakes_main \
   test_attended_captain_outcome_reaches_main_through_branch_outcomes \
   test_captain_leaving_mid_turn_keeps_its_captain_outcome_for_the_return \
   test_quiet_record_without_its_daemon_is_a_present_captain \
